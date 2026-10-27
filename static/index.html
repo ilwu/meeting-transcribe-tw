@@ -1,0 +1,651 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>逐字稿校對</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="h-screen overflow-hidden bg-white text-sm text-slate-800 antialiased">
+<div class="grid h-full grid-cols-[15rem_1fr_21rem] 2xl:grid-cols-[16rem_1fr_24rem]">
+
+  <!-- 左欄：搜尋、處理中的會議、會議清單、錄音 -->
+  <nav class="flex min-h-0 flex-col bg-slate-900 text-slate-300">
+    <div class="flex items-center gap-2 px-4 pt-4 pb-3 font-semibold text-white">
+      <span class="grid size-7 place-items-center rounded-lg bg-indigo-500 text-xs">校</span>逐字稿校對
+    </div>
+    <div id="search" class="relative px-3">
+      <input type="search" id="q" placeholder="⌕ 搜尋所有會議" title="在所有會議的校對後文字裡找；空白分開的詞要同時出現"
+             class="w-full rounded-lg bg-slate-800 px-3 py-2 text-slate-200 placeholder:text-slate-500 focus:ring-2 focus:ring-indigo-400 focus:outline-none">
+      <div id="searchPanel" class="absolute top-0 left-full z-30 ml-2 hidden max-h-[80vh] w-[36rem] overflow-auto rounded-xl bg-white p-3 text-slate-800 shadow-2xl ring-1 ring-slate-200"></div>
+    </div>
+    <div id="jobsSec" class="hidden">
+      <div class="mt-4 px-4 text-xs font-semibold tracking-wide text-slate-500">處理中</div>
+      <div id="jobsList" class="mt-1 space-y-1 px-2"></div>
+    </div>
+    <div class="mt-4 px-4 text-xs font-semibold tracking-wide text-slate-500">會議</div>
+    <div id="meetings" class="mt-1 min-h-0 flex-1 space-y-0.5 overflow-auto px-2 pb-3"></div>
+    <a href="/record" class="flex items-center gap-2 border-t border-slate-800 px-4 py-3 hover:bg-slate-800"><span class="size-2.5 rounded-full bg-red-500"></span>錄一場實體會議</a>
+  </nav>
+
+  <!-- 中欄：逐字稿 -->
+  <main class="flex min-h-0 min-w-0 flex-col bg-slate-50">
+    <div class="border-b border-slate-200 bg-white px-6 pt-4">
+      <div class="flex items-center gap-3">
+        <div class="min-w-0">
+          <h1 id="title" class="truncate text-lg font-semibold text-slate-900"></h1>
+          <div id="meta" class="muted"></div>
+        </div>
+        <div class="ml-auto h-1.5 w-40 shrink-0 rounded-full bg-slate-200"><div id="bar" class="h-full w-0 rounded-full bg-emerald-500"></div></div>
+        <button id="export" class="btn btn-primary" title="匯出校對版（選存檔位置；會議資料夾也會留一份 corrected.md）">匯出</button>
+      </div>
+      <div id="filters" class="mt-3 flex items-center gap-5 overflow-x-auto">
+        <button class="tab on" data-f="all">全部 <span></span></button>
+        <button class="tab" data-f="pending">未處理 <span></span></button>
+        <button class="tab" data-f="suspect" title="與 whisper 差異大">可疑 <span class="text-amber-600"></span></button>
+        <button class="tab" data-f="edited">已修改 <span></span></button>
+        <button class="tab" data-f="sug">LLM 建議 <span></span></button>
+        <button class="tab" data-f="fix">錯字建議 <span></span></button>
+      </div>
+    </div>
+    <div id="scroller" class="min-h-0 flex-1 overflow-auto px-6 py-4">
+      <section id="list" class="mx-auto max-w-4xl divide-y divide-slate-200 overflow-hidden rounded-xl bg-white ring-1 ring-slate-200"></section>
+    </div>
+    <div class="flex items-center gap-3 border-t border-slate-200 bg-white px-6 py-2">
+      <span id="nowPlaying" class="muted w-56 truncate">尚未播放</span>
+      <audio id="audio" controls preload="metadata" class="h-9 flex-1"></audio>
+      <select id="rate" class="rounded-md px-1 py-0.5 text-xs ring-1 ring-slate-200" title="播放速度"><option>0.8</option><option selected>1</option><option>1.25</option><option>1.5</option></select>
+      <label class="flex items-center gap-1.5 text-xs whitespace-nowrap text-slate-500"><input type="checkbox" id="showWhisper" class="accent-indigo-600"> 顯示 whisper</label>
+    </div>
+  </main>
+
+  <!-- 右欄：講者／AI 工具／會議紀錄 -->
+  <aside class="flex min-h-0 flex-col border-l border-slate-200 bg-white">
+    <div id="rtabs" class="flex gap-5 border-b border-slate-200 px-4 pt-3">
+      <button class="tab on" data-tab="speakers">講者</button>
+      <button class="tab" data-tab="tools">AI 工具 <span id="glCount" class="ml-0.5 hidden rounded-full bg-indigo-100 px-1.5 text-xs text-indigo-700"></span></button>
+      <button class="tab" data-tab="notes">會議紀錄</button>
+    </div>
+
+    <div id="pane-speakers" class="min-h-0 flex-1 space-y-3 overflow-auto p-4">
+      <div class="flex gap-2">
+        <button id="guessNames" class="btn btn-xs flex-1 py-1.5" title="從對話內容推測講者名字，只列建議">AI 猜名字</button>
+        <button id="vpMatch" class="btn btn-xs hidden flex-1 py-1.5" title="用聲紋比對已知的人：很像的自動帶入，不夠像的列為建議">聲紋比對</button>
+      </div>
+      <div id="speakers" class="space-y-3"></div>
+    </div>
+
+    <div id="pane-tools" class="hidden min-h-0 flex-1 space-y-4 overflow-auto p-4">
+      <div class="card space-y-3">
+        <div class="section-title">逐字稿</div>
+        <div><button id="prepass" class="btn w-full">LLM 先修可疑行</button><div class="muted mt-1">對可疑行請 LLM 重聽並給建議，每次 20 行，採用與否由你決定。</div></div>
+        <div><button id="findFixes" class="btn w-full">AI 找錯字</button><div class="muted mt-1">AI 掃整份逐字稿，只列「原文片段 → 建議」，按接受才改。</div></div>
+        <div>
+          <div class="flex gap-2"><button id="cleanFillers" class="btn flex-1">清語助詞</button><button id="undoFillers" class="btn hidden">復原清理</button></div>
+          <div class="muted mt-1">刪掉嗯、啊、贅詞的「那個／就是／然後」與口吃重複，只能刪不能改字；只動還沒處理的行，原文保留，可以一鍵復原。</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="section-title">詞彙表建議</div>
+        <div id="glPanel" class="mt-2"></div>
+      </div>
+      <div class="card muted space-y-1 leading-relaxed">
+        <div class="section-title mb-1">快捷鍵</div>
+        <div><kbd>Ctrl</kbd>+<kbd>Space</kbd> 播放／暫停這行</div>
+        <div><kbd>Ctrl</kbd>+<kbd>Enter</kbd> 接受並跳下一行</div>
+        <div><kbd>Alt</kbd>+<kbd>↑</kbd>／<kbd>↓</kbd> 上一行／下一行</div>
+        <div><kbd>Ctrl</kbd>+<kbd>L</kbd> 請 LLM 重聽這行</div>
+        <div><kbd>Esc</kbd> 停止播放</div>
+        <div class="pt-1">左側色條：<span class="text-amber-600">橘</span> 可疑、<span class="text-indigo-600">藍</span> 已修改、<span class="text-emerald-600">綠</span> 已接受</div>
+      </div>
+    </div>
+
+    <div id="pane-notes" class="hidden min-h-0 flex-1 overflow-auto">
+      <div class="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-4 py-3">
+        <select id="tpl" class="rounded-lg px-2 py-1.5 ring-1 ring-slate-200"><option value="general">一般會議</option><option value="logic">業務邏輯</option></select>
+        <button id="makeNotes" class="btn">整理</button>
+        <button id="saveNotes" class="btn ml-auto hidden" title="把會議紀錄另存成 Markdown（會議資料夾也一直有一份 notes.md）">另存</button>
+        <div id="notesStat" class="muted w-full"></div>
+      </div>
+      <div id="notesBody" class="notes p-4"><p class="muted">尚未整理。選範本後按「整理」，約 30～60 秒。</p></div>
+    </div>
+  </aside>
+</div>
+<div id="toast" class="pointer-events-none fixed right-6 bottom-16 z-40 rounded-lg bg-slate-900/90 px-3 py-2 text-sm text-white opacity-0 transition-opacity"></div>
+
+<script>
+const $ = (s, el=document) => el.querySelector(s);
+let P = null, name = null, focusId = null, stopAt = null, filter = 'all';
+const audio = $('#audio'), scroller = $('#scroller');
+
+function toast(msg){ const t=$('#toast'); t.textContent=msg; t.style.opacity=1; clearTimeout(t._h); t._h=setTimeout(()=>t.style.opacity=0,1800); }
+function fmt(s){ s=Math.floor(s); return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0'); }
+async function api(path, body, method='POST'){ const r = await fetch(path, {method, headers:{'Content-Type':'application/json'}, body: body?JSON.stringify(body):undefined}); if(!r.ok) throw new Error(await r.text()); return r.json(); }
+function spkName(l){ return (P.speakers[l] && P.speakers[l].name) || l; }
+function esc(t){ return (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+// 講者顏色依標籤排序固定，同一場裡每個人的顏色不會因為改名而變
+const SPK_TEXT = ['text-sky-700', 'text-violet-700', 'text-rose-700', 'text-teal-700', 'text-amber-700', 'text-fuchsia-700', 'text-lime-700', 'text-orange-700'];
+const SPK_DOT = ['bg-sky-500', 'bg-violet-500', 'bg-rose-500', 'bg-teal-500', 'bg-amber-500', 'bg-fuchsia-500', 'bg-lime-500', 'bg-orange-500'];
+const spkIdx = l => Math.max(0, Object.keys(P.speakers).sort().indexOf(l)) % SPK_TEXT.length;
+
+// ===== 左欄會議清單：標題、日期、校對進度 =====
+let OV = [], knownProjects = [], jobsTimer = null;
+function renderNav(){
+  const nav = $('#meetings'), y = nav.scrollTop;   // 每 10 秒會重畫，捲動位置要留著
+  nav.innerHTML = OV.map(m => {
+    const pct = m.total ? Math.round(100 * m.done / m.total) : 0, on = m.name === name;
+    return `<a data-p="${esc(m.name)}" class="block cursor-pointer rounded-lg px-2 py-2 ${on ? 'bg-slate-800 text-white' : 'hover:bg-slate-800'}" title="${esc(m.name)}">
+      <div class="flex justify-between gap-2"><span class="truncate">${esc(m.title)}</span><span class="shrink-0 text-xs text-slate-500">${esc(m.date.slice(5).replace('-', '/'))}</span></div>
+      <div class="mt-1.5 h-1 rounded-full bg-slate-700"><div class="h-full rounded-full bg-emerald-400" style="width:${pct}%"></div></div></a>`;
+  }).join('');
+  nav.scrollTop = y;
+}
+$('#meetings').addEventListener('click', e => { const a = e.target.closest('[data-p]'); if (a && a.dataset.p !== name) loadProject(a.dataset.p); });
+async function fetchOverview(){ OV = await (await fetch('/api/projects/overview')).json(); return OV.map(m => m.name); }
+async function refreshProjectList(){
+  const names = await fetchOverview();
+  const added = names.filter(n => !knownProjects.includes(n));
+  knownProjects = names; renderNav();
+  if (added.length) toast(`轉好了，可以校對：${added.join('、')}`);
+}
+
+// ===== 處理中：待轉錄、轉錄中、排隊、失敗；轉完自動加進會議清單 =====
+async function pollJobs(){
+  try {
+    const st = await (await fetch('/api/rec/status')).json();
+    const pend = st.pending || [];
+    const running = Object.entries(st.transcribing || {}).filter(([, v]) => v.state === '進行中');
+    const queued = Object.entries(st.transcribing || {}).filter(([, v]) => v.state === '排隊中').sort(([, a], [, b]) => a.queue_pos - b.queue_pos);
+    const failed = Object.entries(st.transcribing || {}).filter(([, v]) => String(v.state).startsWith('失敗'));
+    const last = v => v.steps?.length ? v.steps[v.steps.length - 1] : '準備中';
+    const item = (k, badge, sub, extra = '') => `<div class="rounded-lg px-2 py-2" title="${esc(k)}"><div class="flex items-center justify-between gap-2"><span class="truncate text-slate-200">${esc(k)}</span>${badge}</div>${sub ? `<div class="mt-0.5 text-xs text-slate-500">${sub}</div>` : ''}${extra}</div>`;
+    $('#jobsList').innerHTML =
+      running.map(([k, v]) => item(k, '<span class="shrink-0 text-xs text-amber-400">轉錄中</span>', `已 ${fmt(v.elapsed)}${v.whisper_eta_text ? `，whisper 預計 ${v.whisper_eta_text} 完成` : ''}：${esc(last(v))}`)).join('')
+      + queued.map(([k, v]) => item(k, `<span class="shrink-0 text-xs text-slate-400">排隊第 ${v.queue_pos}</span>`, v.wait_other ? '等另一個轉錄程式跑完' : '前一場轉完才開始')).join('')
+      + failed.map(([k, v]) => item(k, '<span class="shrink-0 text-xs text-red-400">失敗</span>', esc((v.error || last(v)).slice(-120)))).join('')
+      + pend.map(k => item(k, `<button data-tr="${esc(k)}" class="shrink-0 cursor-pointer rounded-md bg-slate-700 px-2 py-0.5 text-xs text-slate-200 hover:bg-slate-600 disabled:opacity-60">開始轉錄</button>`, '')).join('');
+    $('#jobsSec').classList.toggle('hidden', !(pend.length || running.length || queued.length || failed.length));
+    await refreshProjectList();
+  } catch (e) {}
+  clearTimeout(jobsTimer); jobsTimer = setTimeout(pollJobs, 10000);   // 只保留一個排程
+}
+$('#jobsList').addEventListener('click', async e => {
+  const f = e.target.dataset.tr; if (!f) return;
+  e.target.disabled = true; e.target.textContent = '已排入';
+  try { await api('/api/rec/transcribe/' + encodeURIComponent(f), {}); toast(`已排入轉錄（一次轉一場）：${f}`); } catch (err) { toast('失敗：' + err.message.slice(0, 80)); }
+  clearTimeout(jobsTimer); jobsTimer = setTimeout(pollJobs, 1500);
+});
+
+async function loadProjects(){
+  const names = await fetchOverview();
+  knownProjects = names;
+  const want = localStorage.getItem('proj');
+  await loadProject(want && names.includes(want) ? want : names[0]);
+}
+async function loadProject(n){
+  name = n; localStorage.setItem('proj', n);
+  P = await (await fetch('/api/project/'+n)).json();
+  assignShots();
+  $('#vpMatch').classList.toggle('hidden', !P.voiceprint_available);
+  audio.src = '/audio/'+n; audio.playbackRate = parseFloat($('#rate').value); stopAt = null;
+  $('#nowPlaying').textContent = '尚未播放';
+  const m = OV.find(x => x.name === n) || {title: n, date: ''};
+  $('#title').textContent = m.title; document.title = `${m.title}｜逐字稿校對`;
+  focusId = null; renderNav(); renderSpeakers(); renderList(); updateStat(); scroller.scrollTop = 0;
+  if (curTab === 'notes') openNotes();
+}
+// 畫面時間軸：每行對應「開始前 3 秒內最近的一張關鍵畫面」；畫面內容換了的那一行才顯示縮圖
+const shotOf = {};
+function assignShots(){
+  for (const k in shotOf) delete shotOf[k];
+  const tl = P.timeline || []; if (!tl.length) return;
+  let g = -1; const group = tl.map(x => x.same_as_prev ? g : ++g);
+  let j = -1, prevGroup = null;
+  for (const s of P.segments) {
+    while (j + 1 < tl.length && tl[j + 1].t <= s.start + 3) j++;
+    if (j >= 0 && group[j] !== prevGroup) { shotOf[s.id] = tl[j]; prevGroup = group[j]; }
+  }
+}
+const FILTERS = {
+  all: () => true,
+  pending: s => s.status === 'pending',
+  suspect: s => s.flag === 'suspect',
+  edited: s => s.status === 'edited',
+  sug: s => !!s.llm_suggestion,
+  fix: s => pendingFixes(s).length > 0,
+};
+function updateStat(){
+  const segs = P.segments, total = segs.length, done = segs.filter(s=>s.status!=='pending').length;
+  $('#bar').style.width = (100*done/total).toFixed(1)+'%';
+  const m = OV.find(x => x.name === name);
+  const dur = m?.duration ? `${Math.round(m.duration / 60)} 分鐘 · ` : '';
+  $('#meta').textContent = `${m?.date ? m.date + ' · ' : ''}${dur}${Object.keys(P.speakers).length} 位講者 · 已處理 ${done} / ${total}`;
+  document.querySelectorAll('#filters .tab').forEach(b => { b.querySelector('span').textContent = segs.filter(FILTERS[b.dataset.f]).length; });
+  if (m && m.done !== done) { m.done = done; renderNav(); }
+  syncUndoFillers();
+}
+function setFilter(f){
+  filter = f;
+  document.querySelectorAll('#filters .tab').forEach(b => b.classList.toggle('on', b.dataset.f === f));
+  renderList();
+}
+$('#filters').addEventListener('click', e => { const b = e.target.closest('[data-f]'); if (b) setFilter(b.dataset.f); });
+
+function renderSpeakers(){
+  const labels = Object.keys(P.speakers).sort();
+  const counts = {}; P.segments.forEach(s=>counts[s.speaker]=(counts[s.speaker]||0)+1);
+  $('#speakers').innerHTML = labels.map(l=>`
+    <div class="spk card space-y-2" data-l="${esc(l)}">
+      <div class="flex items-center justify-between muted"><span class="flex items-center gap-1.5"><span class="size-2.5 rounded-full ${SPK_DOT[spkIdx(l)]}"></span>${esc(l)}</span><span>${counts[l]||0} 行</span></div>
+      <input class="field" placeholder="姓名（例：王小明）" value="${esc(P.speakers[l].name||'')}" data-act="rename">
+      ${P.speakers[l].name_source === 'voiceprint' ? `<div class="muted flex items-center gap-2"><span class="rounded bg-emerald-50 px-1.5 text-emerald-700 ring-1 ring-emerald-200">聲紋自動 ${P.speakers[l].voice_score}</span><button data-vp="reject" class="link text-slate-500">不是他</button></div>` : ''}
+      ${P.speakers[l].voice_warning ? `<div class="text-xs text-amber-700">⚠ ${esc(P.speakers[l].voice_warning)}</div>` : ''}
+      ${(P.speaker_purity || {})[l] != null && P.speaker_purity[l] < 0.6 ? `<div class="text-xs text-amber-700" title="這位講者各段聲音的一致性偏低，可能把兩個人分成同一位">⚠ 可能混到別人的聲音（一致性 ${P.speaker_purity[l]}）</div>` : ''}
+      <select data-act="merge" class="field py-1 text-xs text-slate-500"><option value="">合併到…</option>${labels.filter(x=>x!==l).map(x=>`<option value="${esc(x)}">${esc(spkName(x))}（${esc(x)}）</option>`).join('')}</select>
+      ${(P.name_suggestions || []).filter(x => x.speaker === l).map(x => x.merge_into && P.speakers[x.merge_into]
+        ? `<div class="rounded-lg bg-indigo-50 p-2.5 text-xs text-slate-700">可能和 <b>${esc(spkName(x.merge_into))}</b> 是同一人：${esc(x.reason)}<div class="mt-2 flex gap-2"><button data-ns="merge" data-into="${esc(x.merge_into)}" data-name="${esc(x.name)}" class="btn btn-xs btn-primary">合併到 ${esc(spkName(x.merge_into))}</button><button data-ns="dismiss" data-name="${esc(x.name)}" class="btn btn-xs">忽略</button></div></div>`
+        : `<div class="rounded-lg bg-indigo-50 p-2.5 text-xs text-slate-700">可能是 <b>${esc(x.name)}</b>：${esc(x.reason)}${x.time ? ` <span class="ts-link link" data-t="${esc(x.time)}">[${esc(x.time)}]</span>` : ''}<div class="mt-2 flex gap-2"><button data-ns="apply" data-name="${esc(x.name)}" class="btn btn-xs btn-primary">套用</button><button data-ns="dismiss" data-name="${esc(x.name)}" class="btn btn-xs">忽略</button></div></div>`).join('')}
+    </div>`).join('');
+  $('#speakers').querySelectorAll('input[data-act=rename]').forEach(inp=>inp.addEventListener('change', async e=>{
+    const l = e.target.closest('.spk').dataset.l, nm = e.target.value.trim();
+    P.speakers = await api(`/api/project/${name}/speakers`, {op:'rename', label:l, name:nm});
+    renderSpeakers(); renderList(true); toast('已更名'); loadGl();
+    if (nm && P.voiceprint_available) checkVoiceWarning(name, l, nm);
+  }));
+  $('#speakers').querySelectorAll('select[data-act=merge]').forEach(sel=>sel.addEventListener('change', async e=>{
+    const src = e.target.closest('.spk').dataset.l, dst = e.target.value; if(!dst) return;
+    if(!confirm(`把 ${src} 的所有行改為 ${spkName(dst)}（${dst}）？`)) { e.target.value=''; return; }
+    P.speakers = await api(`/api/project/${name}/speakers`, {op:'merge', src, dst});
+    P.segments.forEach(s=>{ if(s.speaker===src) s.speaker=dst; }); renderSpeakers(); renderList(true); updateStat(); toast('已合併');
+  }));
+}
+// 取名後聲紋在背景學（長會議要十幾秒），學不進去（聲音更像別人）的警告晚一點才會寫進專案
+function checkVoiceWarning(proj, label, nm){
+  for (const ms of [8000, 25000]) setTimeout(async () => {
+    if (name !== proj || P.speakers[label]?.name !== nm) return;
+    const sp = (await (await fetch('/api/project/' + encodeURIComponent(proj))).json()).speakers[label];
+    if (name !== proj || !sp || sp.voice_warning === (P.speakers[label].voice_warning || '')) return;
+    P.speakers[label].voice_warning = sp.voice_warning; renderSpeakers();
+    if (sp.voice_warning) toast('聲紋沒有學：' + sp.voice_warning.slice(0, 40) + '…');
+  }, ms);
+}
+function rowHtml(s){
+  const labels = Object.keys(P.speakers).sort();
+  const showW = $('#showWhisper').checked;
+  const orig = s.text!==s.text_orig ? `<div class="sub orig">${s.cleaned && s.status==='pending' ? '清語助詞前' : '原始'}：${esc(s.text_orig)}</div>` : '';
+  const wh = showW && s.text_whisper ? `<div class="sub"><b class="font-medium text-slate-600">whisper</b>：${esc(s.text_whisper)} ${s.whisper_cer!=null?`<span class="text-amber-600">差異 ${s.whisper_cer}</span>`:''}</div>` : '';
+  const sh = shotOf[s.id];
+  const shot = sh ? `<div class="shot"><a href="/frame/${encodeURIComponent(name)}/${sh.frame}" target="_blank" title="開啟原圖"><img loading="lazy" src="/frame/${encodeURIComponent(name)}/${sh.frame}"></a><span>畫面 ${fmt(sh.t)}：${esc(sh.desc)}</span></div>` : '';
+  const fixes = (s.fixes || []).map((f, i) => f.status !== 'pending' ? '' : (() => {
+    const same = P.segments.reduce((n, x) => n + (x.fixes || []).filter(y => y.status === 'pending' && y.original === f.original && y.suggestion === f.suggestion).length, 0);
+    return `<div class="fix"><span class="pair"><del>${esc(f.original)}</del> → <ins>${esc(f.suggestion)}</ins></span><span class="text-slate-500">${esc(f.reason)}</span>`
+      + `<button data-act="fix" data-op="accept" data-i="${i}" class="btn btn-xs">接受</button>`
+      + (same > 1 ? `<button data-act="fix" data-op="accept" data-all="1" data-i="${i}" class="btn btn-xs">全部接受（${same}）</button>` : '')
+      + `<button data-act="fix" data-op="dismiss" data-i="${i}" class="link text-slate-400">忽略</button></div>`; })()).join('');
+  const sug = s.llm_suggestion && s.llm_suggestion!==s.text ? `<div class="sug"><span><b class="text-indigo-700">LLM 重聽</b>：${esc(s.llm_suggestion)}</span><button data-act="adopt" class="btn btn-xs btn-primary">採用</button><button data-act="dismiss" class="link text-xs text-slate-500">忽略</button></div>` : '';
+  const suspect = s.flag === 'suspect' && s.status === 'pending' ? ' <span class="ml-1 rounded bg-amber-100 px-1 font-normal text-amber-700">可疑</span>' : '';
+  return `<div class="row ${s.status} ${s.flag||''}" data-id="${s.id}">
+    <div class="time" title="播放這行">${fmt(s.start)}</div>
+    <div class="min-w-0">
+      <div class="mb-0.5 px-2 text-xs font-semibold ${SPK_TEXT[spkIdx(s.speaker)]}">${esc(spkName(s.speaker))}${suspect}${s.status==='accepted'?' <span class="font-normal text-emerald-600">✓</span>':''}</div>
+      ${shot}<textarea data-act="text" rows="1">${esc(s.text)}</textarea>${orig}${wh}${fixes}${sug}
+      <div class="actions">
+        <button data-act="play" class="btn btn-xs">▶ 播放</button>
+        <button data-act="accept" class="btn btn-xs bg-emerald-600 text-white ring-emerald-600 hover:bg-emerald-500">✓ 接受</button>
+        <button data-act="revert" class="btn btn-xs">↺ 還原</button>
+        <button data-act="llm" class="btn btn-xs">✨ LLM 重聽</button>
+        <select data-act="speaker" class="ml-auto rounded-md bg-white px-2 py-0.5 text-xs ring-1 ring-slate-200">${labels.map(l=>`<option value="${esc(l)}" ${l===s.speaker?'selected':''}>講者：${esc(spkName(l))}</option>`).join('')}</select>
+      </div>
+    </div>
+  </div>`;
+}
+function renderList(keepScroll){
+  const y = scroller.scrollTop;
+  const segs = P.segments.filter(FILTERS[filter]);
+  $('#list').innerHTML = segs.length ? segs.map(rowHtml).join('') : '<div class="muted p-6 text-center">這個篩選沒有任何行</div>';
+  $('#list').querySelectorAll('textarea').forEach(autosize);
+  if (keepScroll) scroller.scrollTop = y;
+  if (focusId != null) rowEl(focusId)?.classList.add('focus');
+}
+// 支援 field-sizing 的瀏覽器由 CSS 自動調高度；用 JS 量 scrollHeight 會在字型載入前量到錯的高度，多出一截空白
+const NATIVE_SIZING = CSS.supports('field-sizing', 'content');
+function autosize(t){ if (NATIVE_SIZING) return; t.style.height='auto'; t.style.height=(t.scrollHeight+2)+'px'; }
+function rowEl(id){ return $(`.row[data-id="${id}"]`); }
+function seg(id){ return P.segments[id]; }
+
+function playSeg(id){
+  const s = seg(id); focusRow(id);
+  audio.currentTime = Math.max(0, s.start - 0.8); stopAt = s.end + 0.5; audio.play();
+  document.querySelectorAll('.row.playing').forEach(r=>r.classList.remove('playing')); rowEl(id)?.classList.add('playing');
+  $('#nowPlaying').textContent = `播放 ${fmt(s.start)} – ${fmt(s.end)}  ${spkName(s.speaker)}`;
+}
+audio.addEventListener('timeupdate', ()=>{ if (stopAt!=null && audio.currentTime >= stopAt){ audio.pause(); stopAt=null; } });
+function focusRow(id){
+  document.querySelectorAll('.row.focus').forEach(r=>r.classList.remove('focus'));
+  const el = rowEl(id); if(!el) return; el.classList.add('focus'); focusId = id;
+  const r = el.getBoundingClientRect(), b = scroller.getBoundingClientRect();
+  if (r.top < b.top + 8 || r.bottom > b.bottom - 8) el.scrollIntoView({block:'center'});
+}
+function nextVisible(id, dir){ const ids=[...document.querySelectorAll('.row')].map(r=>+r.dataset.id); const i=ids.indexOf(id); return ids[i+dir] ?? id; }
+
+const saveTimers = {};
+async function saveSeg(id, patch, silent){
+  Object.assign(seg(id), patch);
+  const r = await api(`/api/project/${name}/segment/${id}`, patch);
+  Object.assign(seg(id), r); const el = rowEl(id); if (el){ el.className = `row ${r.status} ${r.flag||''}` + (focusId===id?' focus':''); }
+  updateStat(); if(!silent) toast('已儲存');
+}
+// 文字框的自動儲存排程：還原／採用時取消（以按鈕結果為準），接受時立即送出（保留剛打的字）
+function cancelPendingSave(id){ clearTimeout(saveTimers[id]); delete saveTimers[id]; }
+async function flushPendingSave(id){
+  if (!(id in saveTimers)) return; cancelPendingSave(id);
+  const ta = rowEl(id)?.querySelector('textarea[data-act=text]'); if (ta) await saveSeg(id, {text:ta.value}, true);
+}
+async function accept(id){ await flushPendingSave(id); await saveSeg(id, {status:'accepted'}, true); refreshRow(id); }
+async function revert(id){ cancelPendingSave(id); const s=seg(id); await saveSeg(id, {text:s.text_orig, status:'pending', llm_suggestion:''}, true); refreshRow(id); }
+function refreshRow(id){ const el=rowEl(id); if(!el) return; el.outerHTML = rowHtml(seg(id)); rowEl(id).querySelectorAll('textarea').forEach(autosize); if(focusId===id) rowEl(id).classList.add('focus'); }
+async function llm(id){
+  const btn = rowEl(id)?.querySelector('button[data-act=llm]'); if (!btn) return;   // 該行被篩選隱藏時不動作
+  toast('LLM 重聽中…'); btn.disabled = true;
+  try { const r = await api(`/api/project/${name}/relisten/${id}`); if (r.suggestion) seg(id).llm_suggestion = r.suggestion; refreshRow(id); updateStat(); toast(r.suggestion ? `建議已到（${r.model}, ${r.seconds}s）` : r.error ? `失敗：${r.error.slice(0,80)}` : ('沒有建議' + (r.blocked?`，被擋：${r.blocked}`:''))); }
+  catch(e){ toast('失敗：'+e.message.slice(0,80)); }
+  finally { const b = rowEl(id)?.querySelector('button[data-act=llm]'); if (b) b.disabled = false; }
+}
+
+$('#list').addEventListener('click', async e=>{
+  const row = e.target.closest('.row'); if(!row) return; const id = +row.dataset.id; const act = e.target.dataset.act;
+  if (e.target.classList.contains('time') || act==='play') return playSeg(id);
+  if (act==='accept') { await accept(id); focusRow(nextVisible(id, 1)); return; }
+  if (act==='revert') return revert(id);
+  if (act==='llm') return llm(id);
+  if (act==='adopt') { cancelPendingSave(id); const s=seg(id); await saveSeg(id, {text:s.llm_suggestion, status:'edited'}, true); refreshRow(id); return; }
+  if (act==='fix') { await flushPendingSave(id); return applyFix(id, e.target.dataset); }
+  if (act==='dismiss') { await flushPendingSave(id); await saveSeg(id, {llm_suggestion:''}, true); refreshRow(id); return; }
+  focusRow(id);
+});
+$('#list').addEventListener('input', e=>{
+  if (e.target.dataset.act!=='text') return; autosize(e.target);
+  const id = +e.target.closest('.row').dataset.id; clearTimeout(saveTimers[id]);
+  saveTimers[id] = setTimeout(()=>{ delete saveTimers[id]; saveSeg(id, {text:e.target.value}, true); }, 600);
+});
+$('#list').addEventListener('change', e=>{
+  if (e.target.dataset.act!=='speaker') return; const id = +e.target.closest('.row').dataset.id;
+  saveSeg(id, {speaker:e.target.value}, true).then(()=>{ refreshRow(id); renderSpeakers(); });
+});
+$('#list').addEventListener('focusin', e=>{ const row=e.target.closest('.row'); if(row) focusRow(+row.dataset.id); });
+
+document.addEventListener('keydown', e=>{
+  if (focusId==null) return;
+  if (e.ctrlKey && e.code==='Space') { e.preventDefault(); if (!audio.paused && rowEl(focusId)?.classList.contains('playing')) audio.pause(); else playSeg(focusId); }
+  else if (e.ctrlKey && e.key==='Enter') { e.preventDefault(); const id=focusId; accept(id).then(()=>{ const n=nextVisible(id,1); focusRow(n); rowEl(n)?.querySelector('textarea')?.focus(); }); }
+  else if (e.altKey && e.key==='ArrowDown') { e.preventDefault(); const n=nextVisible(focusId,1); focusRow(n); rowEl(n)?.querySelector('textarea')?.focus(); }
+  else if (e.altKey && e.key==='ArrowUp') { e.preventDefault(); const n=nextVisible(focusId,-1); focusRow(n); rowEl(n)?.querySelector('textarea')?.focus(); }
+  else if (e.ctrlKey && (e.key==='l' || e.key==='L')) { e.preventDefault(); llm(focusId); }
+  else if (e.key==='Escape') { audio.pause(); stopAt=null; }
+});
+
+// ===== 右欄分頁 =====
+let curTab = 'speakers';
+function showTab(t){
+  curTab = t;
+  document.querySelectorAll('#rtabs .tab').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
+  for (const p of ['speakers', 'tools', 'notes']) $('#pane-' + p).classList.toggle('hidden', p !== t);
+}
+$('#rtabs').addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (!b) return; if (b.dataset.tab === 'notes') openNotes(); else showTab(b.dataset.tab); });
+
+// ===== 會議紀錄：每條附時間點，點了跳到逐字稿該行播放；「待確認」作答後重新整理 =====
+let NOTES = null;
+const toSec = t => { const m = /^(\d+):(\d{1,2})$/.exec(t || ''); return m ? (+m[1]) * 60 + (+m[2]) : null; };
+const ts = t => t ? `<span class="ts" data-t="${esc(t)}">[${esc(t)}]</span>` : '';
+const noteList = (items, key='text') => items?.length ? `<ul>${items.map(x => `<li>${ts(x.time)}${esc(x[key])}</li>`).join('')}</ul>` : '';
+function renderNotes(){
+  const n = NOTES, b = $('#notesBody');
+  $('#saveNotes').classList.toggle('hidden', !n);
+  if (!n) { b.innerHTML = '<p class="muted">尚未整理。選範本後按「整理」，約 30～60 秒。</p>'; $('#notesStat').textContent = ''; return; }
+  const m = n._meta || {};
+  $('#tpl').value = m.template || 'general';
+  $('#notesStat').textContent = `${m.generated || ''}；整理時逐字稿已校對 ${m.edited_segments}/${m.total_segments} 行`;
+  let h = `<h2>${esc(n.title)}</h2><p>${esc(n.summary)}</p>`;
+  if (m.template === 'logic') {
+    for (const p of n.processes || []) {
+      h += `<h3>${ts(p.time)}${esc((p.code ? p.code + ' ' : '') + (p.name || ''))}</h3><ul>`;
+      for (const [l, k] of [['觸發時機','trigger'], ['執行者','actors'], ['前置條件／輸入','inputs'], ['系統動作','system_actions']])
+        if (p[k]) h += `<li><span class="kv">${l}：</span>${esc(p[k])}</li>`;
+      h += '</ul>';
+      for (const [l, k] of [['業務規則','rules'], ['例外與現況問題','exceptions'], ['待確認','open_points']])
+        if (p[k]?.length) h += `<div class="kv">${l}</div>${noteList(p[k])}`;
+    }
+    if (n.terms?.length) h += `<h3>名詞</h3><table><tr><th>名詞</th><th>意思</th><th class="nw">出處</th></tr>${n.terms.map(x => `<tr><td>${esc(x.term)}</td><td>${esc(x.meaning)}</td><td class="nw">${ts(x.time)}</td></tr>`).join('')}</table>`;
+  } else {
+    if (n.decisions?.length) h += `<h3>決議</h3>${noteList(n.decisions)}`;
+    if (n.action_items?.length) h += `<h3>待辦</h3><table><tr><th class="nw">負責人</th><th>事項</th><th class="nw">期限</th><th class="nw">出處</th></tr>${n.action_items.map(x => `<tr><td class="nw">${esc(x.owner)}</td><td>${esc(x.task)}</td><td class="nw">${esc(x.due)}</td><td class="nw">${ts(x.time)}</td></tr>`).join('')}</table>`;
+    if (n.open_questions?.length) h += `<h3>未決問題</h3>${noteList(n.open_questions)}`;
+    for (const t of n.topics || []) h += `<h3>${ts(t.start)}${esc(t.title)}</h3>${noteList(t.points)}`;
+  }
+  if (n.review_items?.length)
+    h += `<h3>待確認</h3><div class="review">${n.review_items.map((x, i) => `<div class="my-2">${ts(x.time)}${esc(x.question)}<textarea rows="1" data-q="${i}" placeholder="回答（留空表示略過）"></textarea></div>`).join('')}<button id="revise" class="btn btn-primary">依回答重新整理</button></div>`;
+  b.innerHTML = h;
+}
+async function openNotes(){
+  showTab('notes');
+  NOTES = await (await fetch(`/api/project/${encodeURIComponent(name)}/notes`)).json();
+  renderNotes();
+}
+async function runNotes(body, label){
+  const btns = [...document.querySelectorAll('#makeNotes, #revise')]; btns.forEach(x => x.disabled = true);
+  $('#notesStat').textContent = `${label}中…（約 30～60 秒）`;
+  try { NOTES = await api(`/api/project/${encodeURIComponent(name)}/notes`, body); renderNotes(); toast(`${label}完成`); }
+  catch (e) { $('#notesStat').textContent = `${label}失敗：${e.message.slice(0, 80)}`; }
+  btns.forEach(x => x.disabled = false);
+}
+$('#saveNotes').addEventListener('click', async () => {
+  try {
+    const saved = await saveMd(`${name}_會議紀錄.md`,
+      async () => (await (await fetch(`/api/project/${encodeURIComponent(name)}/notes/md`)).json()).text);
+    if (saved) toast(`已另存 ${saved}`);
+  } catch (e) { toast('另存失敗：' + e.message.slice(0, 80)); }
+});
+$('#makeNotes').addEventListener('click', () => runNotes({template: $('#tpl').value}, '整理'));
+$('#notesBody').addEventListener('click', e => {
+  const t = e.target.closest('.ts'); if (t) return jumpTo(toSec(t.dataset.t));
+  if (e.target.id !== 'revise') return;
+  const answers = {};
+  document.querySelectorAll('#notesBody textarea[data-q]').forEach(ta => { if (ta.value.trim()) answers[NOTES.review_items[+ta.dataset.q].question] = ta.value.trim(); });
+  if (!Object.keys(answers).length) return toast('還沒有填任何回答');
+  runNotes({answers}, '依回答重新整理');
+});
+
+// ===== AI 錯字建議：只列建議，使用者按接受才改；「全部接受」一次處理全場同一組 =====
+const pendingFixes = s => (s.fixes || []).filter(f => f.status === 'pending');
+async function applyFix(id, ds){
+  try {
+    const r = await api(`/api/project/${name}/segment/${id}/fix`, {index: +ds.i, action: ds.op, all: !!ds.all});
+    for (const s of r.segments) { P.segments[s.id] = s; refreshRow(s.id); }
+    if (ds.all) renderList(true);                    // 其他行的「全部接受（N）」數字也要更新
+    updateStat();
+    toast(ds.op === 'accept' ? `已修改 ${r.segments.length} 行` : '已忽略');
+    if (ds.op === 'accept') loadGl();
+  } catch (e) { toast('失敗：' + e.message.slice(0, 80)); }
+}
+$('#findFixes').addEventListener('click', async () => {
+  const b = $('#findFixes'); b.disabled = true; b.textContent = 'AI 找錯字中…';
+  try {
+    const r = await api(`/api/project/${name}/fixes`, {});
+    await loadProject(name);
+    if (r.new) setFilter('fix');
+    toast(r.new ? `找到 ${r.new} 則建議（${r.segments} 行），已切到「錯字建議」` : '沒有找到新的錯字建議');
+  } catch (e) { toast('失敗：' + e.message.slice(0, 80)); }
+  b.disabled = false; b.textContent = 'AI 找錯字';
+});
+// ===== 清語助詞：規則加 AI，只刪不改、只動還沒處理的行；可一鍵復原 =====
+const syncUndoFillers = () => $('#undoFillers').classList.toggle('hidden', !P.segments.some(s => s.cleaned && s.status === 'pending'));
+$('#cleanFillers').addEventListener('click', async () => {
+  const b = $('#cleanFillers'); b.disabled = true; b.textContent = '清理中…（約 20～60 秒）';
+  try {
+    const r = await api(`/api/project/${name}/fillers`, {});
+    P.segments = r.segments; renderList(true); updateStat(); syncUndoFillers();
+    toast(r.cleaned ? `清了 ${r.cleaned} 行，每行下方可看清理前的原文` : '沒有要清的語助詞');
+  } catch (e) { toast('失敗：' + e.message.slice(0, 80)); }
+  b.disabled = false; b.textContent = '清語助詞';
+});
+$('#undoFillers').addEventListener('click', async () => {
+  try {
+    const r = await api(`/api/project/${name}/fillers/undo`, {});
+    P.segments = r.segments; renderList(true); updateStat(); syncUndoFillers();
+    toast(`已復原 ${r.undone} 行`);
+  } catch (e) { toast('失敗：' + e.message.slice(0, 80)); }
+});
+$('#prepass').addEventListener('click', async ()=>{
+  if(!confirm('對可疑行批次請 LLM 重聽，每次最多 20 行，可能需要一兩分鐘。繼續？')) return;
+  const b = $('#prepass'); b.disabled = true; b.textContent = '批次重聽中…';
+  try { const r = await api(`/api/project/${name}/prepass?limit=20`); await loadProject(name); toast(`完成 ${r.processed} 行（有建議 ${r.suggested}、失敗 ${r.failed}），剩餘 ${r.remaining} 行`); } catch(e){ toast('失敗：'+e.message.slice(0,80)); }
+  b.disabled = false; b.textContent = 'LLM 先修可疑行';
+});
+// ===== 詞彙表建議：接受過的錯字、講者名稱 → 加入全域／本場詞彙表或忽略 =====
+let GL = [];
+function renderGl(){
+  $('#glCount').classList.toggle('hidden', !GL.length); $('#glCount').textContent = GL.length;
+  $('#glPanel').innerHTML = (GL.length ? GL.map((x, i) => `<div class="border-b border-slate-100 py-2 last:border-0">
+      <b>${esc(x.term)}</b> <span class="muted">${x.kind}${x.variants.length ? `；常誤辨為 ${esc(x.variants.join('、'))}` : ''}；${x.count} 次</span>
+      <div class="mt-1.5 flex gap-1.5"><button data-gl="global" data-i="${i}" class="btn btn-xs">加入全域</button><button data-gl="meeting" data-i="${i}" class="btn btn-xs">加入本場</button><button data-gl="ignore" data-i="${i}" class="link text-xs text-slate-400">忽略</button></div></div>`).join('')
+    : '<div class="muted">目前沒有建議。接受錯字建議、替講者取名後，這裡會列出還不在詞彙表裡的詞。</div>')
+    + '<div class="muted mt-2">加入後，下次轉錄與 LLM 重聽、找錯字都會參考；也可以直接編輯 glossary.txt。</div>';
+}
+async function loadGl(){ try { GL = await (await fetch('/api/glossary/suggestions')).json(); renderGl(); } catch (e) {} }
+$('#glPanel').addEventListener('click', async e => {
+  const a = e.target.dataset.gl; if (!a) return;
+  const x = GL[+e.target.dataset.i];
+  try {
+    GL = await api('/api/glossary/suggestions', {term: x.term, variants: x.variants, action: a, project: name});
+    renderGl(); toast(a === 'ignore' ? `不再建議「${x.term}」` : `已加入${a === 'global' ? '全域' : '本場'}詞彙表：${x.term}`);
+  } catch (err) { toast('失敗：' + err.message.slice(0, 80)); }
+});
+
+// ===== AI 猜講者名字：只列建議（附證據時間），按套用才改名 =====
+$('#guessNames').addEventListener('click', async () => {
+  const b = $('#guessNames'); b.disabled = true; b.textContent = '推測中…';
+  try {
+    P.name_suggestions = await api(`/api/project/${name}/guess_speakers`, {});
+    renderSpeakers();
+    toast(P.name_suggestions.length ? `有 ${P.name_suggestions.length} 則名字建議，請看講者分頁` : '對話中沒有足夠的線索推測名字');
+  } catch (e) { toast('失敗：' + e.message.slice(0, 80)); }
+  b.disabled = false; b.textContent = 'AI 猜名字';
+});
+// ===== 聲紋：很像的自動帶入（可按「不是他」），不夠像的列為建議 =====
+$('#vpMatch').addEventListener('click', async () => {
+  const b = $('#vpMatch'); b.disabled = true; b.textContent = '比對中…';
+  try {
+    const r = await api(`/api/project/${name}/voiceprint/match`, {});
+    Object.assign(P, {speakers: r.speakers, name_suggestions: r.name_suggestions, speaker_purity: r.speaker_purity});
+    renderSpeakers(); renderList(true);
+    const sug = r.name_suggestions.filter(x => x.voiceprint).length;
+    toast(r.auto || sug ? `自動帶入 ${r.auto} 位${sug ? `，另有 ${sug} 則建議請確認` : ''}` : '沒有比對到夠像的已知講者');
+  } catch (e) { toast('失敗：' + e.message.slice(0, 80)); }
+  b.disabled = false; b.textContent = '聲紋比對';
+});
+$('#speakers').addEventListener('click', async e => {
+  if (e.target.dataset.vp === 'reject') {
+    const l = e.target.closest('.spk').dataset.l, old = P.speakers[l].name;
+    P.speakers = await api(`/api/project/${name}/voiceprint/reject`, {label: l});
+    renderSpeakers(); renderList(true); toast(`已移除「${old}」，這位講者之後不會再自動帶入他`);
+    return;
+  }
+  const t = e.target.closest('.ts-link'); if (t) return jumpTo(toSec(t.dataset.t));
+  const op = e.target.dataset.ns; if (!op) return;
+  const l = e.target.closest('.spk').dataset.l, nm = e.target.dataset.name;
+  if (op === 'merge') {   // 按鈕本身就是明確的動作，不再跳確認
+    const dst = e.target.dataset.into;
+    P.speakers = await api(`/api/project/${name}/speakers`, {op: 'merge', src: l, dst});
+    P.segments.forEach(s => { if (s.speaker === l) s.speaker = dst; });
+    renderList(true); updateStat(); toast(`已把 ${l} 合併到 ${spkName(dst)}`);
+  }
+  if (op === 'apply') {
+    await api(`/api/project/${name}/speakers`, {op: 'rename', label: l, name: nm});
+    P.speakers[l].name = nm; renderList(true); toast(`已更名為 ${nm}`); loadGl();
+  }
+  P.name_suggestions = await api(`/api/project/${name}/name_suggestions/dismiss`, {speaker: l, name: nm});
+  renderSpeakers();
+});
+
+// ===== 跨會議搜尋：結果依會議分組，點一筆切到那場、捲到那一行（不自動播放） =====
+let searchTimer = null, searchSeq = 0;
+function highlight(text, terms){
+  // 先切再跳脫：在跳脫後的字串上標記，搜「amp」之類會把 &amp; 拆壞
+  const re = new RegExp('(' + terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')', 'gi');
+  return text.split(re).map((part, i) => i % 2 ? `<mark>${esc(part)}</mark>` : esc(part)).join('');
+}
+const showSearch = on => $('#searchPanel').classList.toggle('hidden', !on);
+async function runSearch(){
+  const q = $('#q').value.trim(), panel = $('#searchPanel');
+  if (!q) { showSearch(false); return; }
+  const seq = ++searchSeq;
+  const r = await (await fetch('/api/search?q=' + encodeURIComponent(q))).json();
+  if (seq !== searchSeq) return;   // 打字快時，舊的結果晚回來不能蓋掉新的
+  const terms = q.split(/\s+/), groups = new Map();
+  for (const x of r.results) { if (!groups.has(x.project)) groups.set(x.project, []); groups.get(x.project).push(x); }
+  const title = p => OV.find(m => m.name === p)?.title || p;
+  panel.innerHTML = `<div class="muted mb-1">${r.total ? `${r.total} 筆，${groups.size} 場會議${r.total > r.results.length ? `（只列前 ${r.results.length} 筆，多打幾個字縮小範圍）` : ''}` : '找不到'}</div>`
+    + [...groups].map(([p, xs]) => `<div class="mt-3 mb-1 flex items-baseline gap-2"><b>${esc(title(p))}</b><span class="muted">${esc(p.slice(0, 10))} · ${xs.length} 筆</span></div>`
+      + xs.map(x => `<div class="sr" data-p="${esc(p)}" data-id="${x.id}"><span class="muted mr-2 tabular-nums">${fmt(x.start)} ${esc(x.speaker)}</span>${highlight(x.text, terms)}</div>`).join('')).join('');
+  showSearch(true);
+}
+$('#q').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 250); });
+$('#q').addEventListener('focus', () => { if ($('#q').value.trim()) showSearch(true); });
+$('#q').addEventListener('keydown', e => { if (e.key === 'Escape') showSearch(false); });
+document.addEventListener('click', e => { if (!$('#search').contains(e.target)) showSearch(false); });
+$('#searchPanel').addEventListener('click', async e => {
+  const el = e.target.closest('.sr'); if (!el) return;
+  const p = el.dataset.p, id = +el.dataset.id;
+  showSearch(false);
+  if (p !== name) await loadProject(p);
+  if (!rowEl(id)) setFilter('all');   // 被篩選隱藏時先顯示全部
+  focusRow(id); audio.currentTime = seg(id).start;
+});
+
+function jumpTo(sec){
+  if (sec == null) return;
+  let id = P.segments[0].id;                       // 時間點對到開始時間不晚於它的最後一行
+  for (const s of P.segments) { if (s.start <= sec + 2) id = s.id; else break; }
+  if (!rowEl(id)) setFilter('all');                 // 被篩選隱藏時先顯示全部
+  playSeg(id);
+}
+$('#showWhisper').addEventListener('change', ()=>renderList(true));
+$('#rate').addEventListener('change', e=>audio.playbackRate=parseFloat(e.target.value));
+// 另存 Markdown：回傳存成的檔名，使用者取消回傳 null。getText 在選好位置之後才呼叫
+async function saveMd(fileName, getText){
+  //====================================
+  // 選存檔位置
+  //====================================
+  // 另存視窗要在點擊當下開（瀏覽器規定），所以先選位置再向後端要內容；同一個 id 讓 Chrome 記住上次的資料夾
+  let handle = null;
+  if (window.showSaveFilePicker) {
+    try {
+      handle = await showSaveFilePicker({id: 'export', suggestedName: fileName, startIn: 'documents',
+                                         types: [{description: 'Markdown', accept: {'text/markdown': ['.md']}}]});
+    } catch (e) { if (e.name === 'AbortError') return null; }   // 其他錯誤（例如權限）改用下載
+  }
+  //====================================
+  // 取得內容
+  //====================================
+  const text = await getText();
+  //====================================
+  // 寫到選的位置
+  //====================================
+  if (handle) {
+    const w = await handle.createWritable(); await w.write(text); await w.close();
+  } else {   // 不支援另存視窗的瀏覽器改用下載
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], {type: 'text/markdown'})); a.download = fileName; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+  return handle ? handle.name : fileName;
+}
+$('#export').addEventListener('click', async ()=>{
+  let r;
+  const saved = await saveMd(`${name}_校對版.md`, async () => (r = await api(`/api/project/${name}/export`)).text);
+  if (saved) toast(`已匯出 ${saved}（修改 ${r.corrections} 行，處理 ${r.done}/${r.total}；會議資料夾也留了一份）`);
+});
+loadProjects().then(pollJobs); loadGl();
+</script>
+</body>
+</html>

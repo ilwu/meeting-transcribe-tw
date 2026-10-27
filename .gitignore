@@ -1,0 +1,34 @@
+# 機密
+.env
+
+# 媒體檔（大、可從原始來源取得）
+*.m4a
+*.mp4
+*.wav
+*.mp3
+
+# 第三方執行檔與模型
+vendor/
+
+# 含大量 base64 頭像的 Teams 匯出樣本
+*.md.bak
+
+__pycache__/
+
+# 會議資料與實驗輸出（含會議內容，不上 GitHub；本機保留）
+meetings/
+research/outputs/
+# 含人名或會議內容（本機保留，不上 GitHub）
+glossary.txt
+research/projects/
+research/研究紀錄.md
+
+# 個人工作狀態（Claude Code 會自動讀取）
+CLAUDE.local.md
+
+# 詞彙表建議的忽略清單（可能含人名）
+glossary_ignored.txt
+
+# 聲紋資料庫（同事的聲音特徵，只在本機）
+voiceprints.json*
+.venv/

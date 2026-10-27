@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>會議錄音</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="min-h-screen bg-slate-50 text-[15px] text-slate-800 antialiased">
+<header class="flex items-center gap-3 bg-slate-900 px-6 py-3 text-white">
+  <span class="grid size-7 place-items-center rounded-lg bg-indigo-500 text-xs">校</span><h1 class="font-semibold">會議錄音</h1>
+  <a href="/" class="ml-auto text-sm text-slate-300 hover:text-white">← 逐字稿校對</a>
+</header>
+<main class="mx-auto flex max-w-3xl flex-col gap-4 px-4 py-6">
+  <div id="msg" class="rounded-lg bg-red-50 px-3 py-2.5 text-red-800 ring-1 ring-red-200" style="display:none"></div>
+  <section id="idle" class="card space-y-4 p-5">
+    <div>
+      <label for="title" class="muted mb-1 block">會議標題（會建立資料夾 meetings/日期_標題，日期會自動加）</label>
+      <input type="text" id="title" class="field py-2" placeholder="例：週會、成品出貨討論" autofocus>
+    </div>
+    <div>
+      <label for="device" class="muted mb-1 block">麥克風</label>
+      <select id="device" class="field py-2"></select>
+    </div>
+    <div class="flex items-center gap-3">
+      <label class="flex items-center gap-2"><input type="checkbox" id="auto" checked class="accent-indigo-600"> 錄完自動轉逐字稿</label>
+      <button id="start" class="btn ml-auto bg-red-600 px-5 py-2 font-semibold text-white ring-red-600 hover:bg-red-500">● 開始錄音</button>
+    </div>
+  </section>
+
+  <section id="busy" class="card hidden space-y-3 p-5">
+    <div class="flex items-center gap-2"><span class="size-3 animate-pulse rounded-full bg-red-500"></span><b id="curTitle"></b> <span id="curFolder" class="muted"></span></div>
+    <div id="timer" class="text-5xl font-semibold tracking-wide tabular-nums">00:00:00</div>
+    <div>
+      <div class="muted">音量 <span id="db">—</span></div>
+      <div class="mt-1.5 h-3.5 overflow-hidden rounded-full bg-slate-200"><div id="bar" class="h-full w-0 bg-emerald-500 transition-[width]"></div></div>
+    </div>
+    <div id="silent" class="rounded-lg bg-orange-50 px-3 py-2.5 text-orange-800 ring-1 ring-orange-200" style="display:none"></div>
+    <div id="dead" class="rounded-lg bg-red-50 px-3 py-2.5 text-red-800 ring-1 ring-red-200" style="display:none"></div>
+    <button id="stop" class="btn btn-primary px-5 py-2">■ 結束錄音</button>
+    <div class="flex gap-2">
+      <input type="text" id="nextTitle" class="field py-2" placeholder="下一場的標題">
+      <button id="next" class="btn shrink-0 py-2">⏭ 結束並開始下一場</button>
+    </div>
+    <p class="muted">錄音在伺服器端進行：關掉這個分頁不會停止錄音；每 5 分鐘存一個小檔，電腦當機最多損失幾分鐘。</p>
+  </section>
+
+  <section id="lists" class="card p-5">
+    <div class="section-title">最近的錄音</div>
+    <ul id="items" class="mt-2 space-y-3"><li class="muted">（無）</li></ul>
+  </section>
+
+  <section id="pendingCard" class="card p-5">
+    <div class="section-title">還沒轉逐字稿的會議</div>
+    <div class="muted mt-1">把錄音或 Teams 下載的影片（可連同 .vtt 字幕、簡報 PDF）放進 meetings/日期_標題/ 資料夾，就會出現在這裡。</div>
+    <ul id="pending" class="mt-2 space-y-2"><li class="muted">（無）</li></ul>
+  </section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+let lastState = null;
+// 收音提醒：看最近 30 秒音量的百分位——第 90 百分位≈有人說話時、第 10 百分位≈背景
+const LEVEL_RULES = [
+  {key: 'mute',  test: s => s.p90 < -65, hold: 30000, msg: '已經 30 秒沒有收到聲音，請確認麥克風沒有被靜音、或選錯麥克風。'},
+  {key: 'quiet', test: s => s.p90 < -50, hold: 60000, msg: '聲音太小：說話的音量偏低，請把筆電或麥克風移近說話的人。'},
+  {key: 'noisy', test: s => s.p10 > -36, hold: 45000, msg: '背景太吵：沒人說話時音量仍偏高，轉逐字稿可能不準，請遠離冷氣、投影機或關窗。'},
+];
+let levels = [], ruleSince = {};
+function levelAlert(db){
+  const now = Date.now();
+  if (db != null) levels.push([now, db]);
+  levels = levels.filter(([t]) => now - t <= 30000);
+  if (levels.length < 20) return '';                // 剛開始錄、樣本太少不判斷
+  const v = levels.map(([, d]) => d).sort((a, b) => a - b);
+  const s = {p10: v[Math.floor(v.length * 0.1)], p90: v[Math.floor(v.length * 0.9)]};
+  for (const r of LEVEL_RULES) {
+    if (r.test(s)) { ruleSince[r.key] ??= now; if (now - ruleSince[r.key] >= r.hold) return r.msg; }
+    else delete ruleSince[r.key];
+  }
+  return '';
+}
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const hms = t => [t/3600|0, (t%3600)/60|0, t%60].map(x => String(x).padStart(2,'0')).join(':');
+async function api(path, body){
+  const r = await fetch(path, {method: body===undefined ? 'GET' : 'POST', headers:{'Content-Type':'application/json'},
+                               body: body===undefined ? undefined : JSON.stringify(body)});
+  const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText); return j;
+}
+async function loadDevices(){
+  const ds = await api('/api/rec/devices');
+  $('#device').innerHTML = ds.map(d => `<option>${esc(d)}</option>`).join('') || '<option value="">（找不到麥克風）</option>';
+}
+function render(st){
+  try { renderInner(st); } catch (e) { console.error(e); $('#items').innerHTML = `<li class="muted">清單顯示失敗：${esc(e.message)}（可能需要重開 app.py）</li>`; }
+}
+function renderInner(st){
+  lastState = st;
+  const r = st.recording;
+  $('#idle').classList.toggle('hidden', !!r); $('#busy').classList.toggle('hidden', !r);
+  if (r) {
+    $('#curTitle').textContent = r.title; $('#curFolder').textContent = r.folder;
+    $('#timer').textContent = hms(r.elapsed);
+    const db = r.level_db;
+    $('#db').textContent = db == null ? '—' : `${db} dB`;
+    $('#bar').style.width = db == null ? '0' : Math.max(0, Math.min(100, (db + 60) / 60 * 100)) + '%';
+    const msg = levelAlert(db);
+    $('#silent').textContent = msg; $('#silent').style.display = msg ? 'block' : 'none';
+    $('#dead').style.display = r.alive ? 'none' : 'block';
+    if (!r.alive) $('#dead').textContent = '錄音程式停止了：' + (r.error || '原因不明') + '　請按「結束錄音」保存已錄的部分。';
+  } else { levels = []; ruleSince = {}; }
+  const items = [];
+  const keys = [...new Set([...Object.keys(st.finalizing), ...Object.keys(st.transcribing)])];   // 重開 app.py 後，只剩 run.log 的轉錄也列出來
+  for (const k of keys) {
+    const v = st.finalizing[k];
+    let tr = st.transcribing[k];
+    if (typeof tr === 'string') tr = {state: tr, elapsed: 0, steps: []};   // 舊版 app.py 只回傳狀態字串（未重開時）
+    let trHtml = '';
+    if (tr) {
+      const last = tr.steps.length ? tr.steps[tr.steps.length - 1] : '準備中';
+      const eta = tr.whisper_eta_text ? `　whisper 預計 ${tr.whisper_eta_text} 完成` : '';
+      const state = tr.queue_pos ? `${tr.state}（第 ${tr.queue_pos} 個，${tr.wait_other ? '等另一個轉錄程式跑完' : '前一場轉完才開始'}）` : `${tr.state}（已 ${hms(tr.elapsed)}）`;
+      trHtml = `<div class="muted">轉逐字稿 <b>${esc(state)}</b>${eta}${tr.state === '完成' ? `　<a href="/" class="link">去校對</a>` : ''}</div>`
+        + (tr.state === '進行中' ? `<div class="muted">目前：${esc(last)}</div>` : '')
+        + (tr.error ? `<pre class="muted mt-1 whitespace-pre-wrap rounded-lg bg-slate-50 p-2">${esc(tr.error)}</pre>` : '')
+        + (tr.steps.length ? `<details data-k="${esc(k)}"><summary class="muted mt-1 cursor-pointer">全部步驟（${tr.steps.length}）</summary><ul class="mt-1 list-disc pl-5">${tr.steps.map(s => `<li class="muted">${esc(s)}</li>`).join('')}</ul></details>` : '');
+    }
+    items.push(`<li><b>${esc(k)}</b>${v ? `：存檔${esc(v)}` : ''}${trHtml}</li>`);
+  }
+  for (const k of st.unfinished)
+    items.push(`<li><b>${esc(k)}</b>：上次沒有正常結束的錄音　<button data-fin="${esc(k)}" class="btn btn-xs">合併保存</button></li>`);
+  const open = new Set([...document.querySelectorAll('#items details[open]')].map(x => x.dataset.k));   // 重畫後保留展開狀態
+  $('#items').innerHTML = items.join('') || '<li class="muted">（無）</li>';
+  document.querySelectorAll('#items details').forEach(x => { if (open.has(x.dataset.k)) x.open = true; });
+  $('#pending').innerHTML = (st.pending || []).map(k =>
+    `<li class="flex items-center gap-3"><b class="flex-1">${esc(k)}</b><button data-tr="${esc(k)}" class="btn btn-xs">開始轉逐字稿</button></li>`).join('') || '<li class="muted">（無）</li>';
+}
+async function poll(){
+  try { render(await api('/api/rec/status')); } catch (e) {}
+  setTimeout(poll, lastState?.recording ? 500 : 2000);
+}
+$('#start').onclick = async () => {
+  $('#start').disabled = true;
+  try { render(await api('/api/rec/start', {title: $('#title').value, device: $('#device').value, auto_transcribe: $('#auto').checked})); }
+  catch (e) { alertBox(e.message); }
+  $('#start').disabled = false;
+};
+$('#stop').onclick = async () => { $('#stop').disabled = true; try { render(await api('/api/rec/stop', {})); } catch (e) { alertBox(e.message); } $('#stop').disabled = false; $('#title').value = ''; };
+$('#next').onclick = async () => {
+  $('#next').disabled = true;
+  try { render(await api('/api/rec/stop', {next_title: $('#nextTitle').value})); $('#nextTitle').value = ''; } catch (e) { alertBox(e.message); }
+  $('#next').disabled = false;
+};
+$('#pending').onclick = async e => {
+  const f = e.target.dataset.tr; if (!f) return;
+  e.target.disabled = true;
+  try { render(await api('/api/rec/transcribe/' + encodeURIComponent(f), {})); } catch (err) { alertBox(err.message); }
+};
+$('#items').onclick = async e => { const f = e.target.dataset.fin; if (f) { e.target.disabled = true; render(await api('/api/rec/finalize/' + encodeURIComponent(f), {})); } };
+function alertBox(msg){ const el = $('#msg'); el.textContent = msg; el.style.display = 'block'; setTimeout(() => el.style.display = 'none', 5000); }
+loadDevices(); poll();
+</script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+flask>=3.0
+opencc-python-reimplemented>=0.1.7
+numpy>=1.24
+pymupdf>=1.24,<2   # 2.0 起會連帶裝 onnxruntime 等十幾個用不到的套件

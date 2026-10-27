@@ -1,0 +1,7 @@
+# 文字檔在 repo 內一律存 LF；工作目錄依 core.autocrlf（Windows 上 Python 寫出的 CRLF 不會被當成整檔修改）
+* text=auto
+*.m4a binary
+*.mp4 binary
+# .bat 一律 CRLF：LF 的批次檔會被 cmd 吞掉換行，下一行不執行也不報錯
+*.bat text eol=crlf
+*.sh text eol=lf
