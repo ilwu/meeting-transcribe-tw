@@ -12,6 +12,7 @@ import time
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from flask import Flask, abort, jsonify, request, send_file, send_from_directory
 
@@ -30,6 +31,48 @@ recorder.MEETINGS.mkdir(exist_ok=True)               # 全新安裝還沒有會�
 PROJECT_GLOBS = ["meetings/*/project.json", "research/projects/*/project.json"]
 app = Flask(__name__, static_folder=str(ROOT / "static"), static_url_path="/static")
 _lock = threading.Lock()
+
+
+@app.before_request
+def only_own_page():
+    """只接受這台電腦上、這個工具自己的頁面發來的請求。
+    綁在 127.0.0.1 只擋得住別台電腦：瀏覽器允許使用者正在看的任何網站對 127.0.0.1 發請求，
+    而這個工具會錄音、存會議內容、呼叫要錢的 API。"""
+    #====================================
+    # Host 必須是本機
+    #====================================
+    # 外面的網域可以臨時指到 127.0.0.1（DNS rebinding），瀏覽器會把這裡當成那個網站自己的，讀得到回應
+    if urlsplit("//" + request.host).hostname not in ("127.0.0.1", "localhost", "::1"):
+        abort(403)
+
+    #====================================
+    # 判斷是不是自己的頁面發的
+    #====================================
+    # 沒有這些標頭的是命令列工具（自我檢查、curl），不是瀏覽器裡別的網站，放行
+    origin, site = request.headers.get("Origin"), request.headers.get("Sec-Fetch-Site")
+    foreign = (origin is not None and origin != f"{request.scheme}://{request.host}") or site not in (None, "same-origin", "none")
+
+    #====================================
+    # 讀取：別的網站只能用連結開頁面，不能讀資料或把錄音嵌進去
+    #====================================
+    if request.method in ("GET", "HEAD"):
+        if foreign and request.headers.get("Sec-Fetch-Mode") != "navigate":
+            abort(403)
+        return
+
+    #====================================
+    # 會改東西的請求：必須來自自己的頁面，而且是 JSON
+    #====================================
+    # 要求 JSON 是第二道：跨站請求帶不了這個標頭（瀏覽器會先問，這裡不答應），舊瀏覽器沒有來源標頭時靠它擋
+    if foreign or request.mimetype != "application/json":
+        abort(403)
+
+
+@app.after_request
+def same_origin_only(resp):
+    # 請瀏覽器自己也擋掉別的網站嵌入這裡的資源（沒有 Sec-Fetch 標頭的舊瀏覽器靠這個）
+    resp.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    return resp
 
 
 def project_dirs():
@@ -227,7 +270,7 @@ def rec_status():
 
 @app.post("/api/rec/start")
 def rec_start():
-    b = request.get_json(force=True)
+    b = request.get_json()
     return _rec_call(recorder.start, b.get("title", ""), b.get("device"), b.get("auto_transcribe", False),
                      b.get("loopback", False))
 
@@ -271,7 +314,7 @@ def audio(name):
 
 @app.post("/api/project/<name>/segment/<int:sid>")
 def update_segment(name, sid):
-    body = request.get_json(force=True)
+    body = request.get_json()
     with _lock:
         p = load(name)
         s = p["segments"][sid]
@@ -291,7 +334,7 @@ def update_segment(name, sid):
 
 @app.post("/api/project/<name>/speakers")
 def speakers(name):
-    body = request.get_json(force=True)
+    body = request.get_json()
     with _lock:
         p = load(name)
         if body.get("op") == "rename":
@@ -457,7 +500,7 @@ def apply_fix(name, sid):
     #====================================
     # 解析參數
     #====================================
-    b = request.get_json(force=True)
+    b = request.get_json()
     action, idx = b.get("action"), int(b.get("index", -1))
     if action not in ("accept", "dismiss"):
         abort(400)
@@ -511,7 +554,7 @@ def guess_speakers(name):
 
 @app.post("/api/project/<name>/name_suggestions/dismiss")
 def dismiss_name_suggestion(name):
-    b = request.get_json(force=True)
+    b = request.get_json()
     with _lock:
         p = load(name)
         p["name_suggestions"] = [x for x in p.get("name_suggestions", [])
@@ -552,7 +595,7 @@ def voiceprint_match(name):
 @app.post("/api/project/<name>/voiceprint/reject")
 def voiceprint_reject(name):
     """「不是他」：清掉自動帶入的名字，之後這場這位講者不再帶入這個人。"""
-    label = request.get_json(force=True).get("label")
+    label = request.get_json().get("label")
     with _lock:
         p = load(name)
         sp = p["speakers"].get(label) or abort(404)
@@ -571,7 +614,7 @@ def glossary_suggestions():
 @app.post("/api/glossary/suggestions")
 def glossary_suggestion_action():
     """詞彙表建議：global＝加入全域詞彙表、meeting＝加入這場的詞彙表、ignore＝之後不再建議。"""
-    b = request.get_json(force=True)
+    b = request.get_json()
     term, action = (b.get("term") or "").strip(), b.get("action")
     if not term or action not in ("global", "meeting", "ignore"):
         abort(400)

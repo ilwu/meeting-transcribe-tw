@@ -44,7 +44,7 @@ source.* ─ffmpeg→ audio/16k.m4a ─(>28 分鐘切段)→ Gemini 加詞彙表
 | `pipeline/voiceprints.py` | 聲紋（sherpa-onnx + ERes2Net，`vendor/models/spk/`）：`speaker_prints()` 每個講者的聲紋與一致性 `purity`（剔除不像的段落）；`enroll()` 取名時學，聲音明顯更像另一個已知的人就不學、回傳警告（存成 `speakers[標籤].voice_warning`）；`match()`／`apply_match()` 很像的自動帶入、次像的列為名字建議，每位講者只考慮自己最像的人、一人一場只自動帶入一位（兩位都最像同一人時列「合併」建議 `merge_into`），不跟同一場比；`reject()`「不是他」。門檻見程式常數與 `docs/design.md`；資料庫 `voiceprints.json` 在根目錄（不進 git） |
 | `pipeline/textutil.py` | 共用的文字正規化 `norm` 與 `cer` |
 | `pipeline/compare.py` | 多份逐字稿兩兩 CER（支援 txt、Teams vtt、whisper json） |
-| `app.py`、`static/index.html` | 校對工具（Flask + 單頁 HTML，三欄：會議清單／逐字稿／講者・AI 工具・會議紀錄），port 5077；`/api/projects/overview` 給左欄（標題、日期、進度，依 mtime 快取）；`/api/project` 另附 `transcripts/screen_timeline.json`（不寫回 project.json），`/frame/<專案>/<檔名>` 提供截圖；`/api/search` 跨會議搜尋 `text`（依 project.json 的 mtime 快取） |
+| `app.py`、`static/index.html` | 校對工具（Flask + 單頁 HTML，三欄：會議清單／逐字稿／講者・AI 工具・會議紀錄），port 5077；每個請求先過 `only_own_page()`（Host 必須是本機；別的來源只能用連結開頁面；會改東西的請求必須來自自己的頁面而且是 JSON）；`/api/projects/overview` 給左欄（標題、日期、進度，依 mtime 快取）；`/api/project` 另附 `transcripts/screen_timeline.json`（不寫回 project.json），`/frame/<專案>/<檔名>` 提供截圖；`/api/search` 跨會議搜尋 `text`（依 project.json 的 mtime 快取） |
 | `recorder.py`、`static/record.html` | 錄音（`/record`）：ffmpeg dshow 錄麥克風；勾「同時錄電腦播出的聲音」時改由 `_capture_mix()` 用 soundcard 抓麥克風與**所有喇叭**的 WASAPI loopback（會議軟體可自己指定喇叭，不一定是 Windows 預設）、以麥克風為時鐘混成單聲道（每個喇叭一條 `_loopback_reader()` 頻繁讀取，沒有資料的時段補靜音；打不開的喇叭略過）；開錄前 `_probe_loopback()` 先試開，失敗不建資料夾，從 stdin 交給同一個 ffmpeg；每 `SEGMENT_SEC` 秒存一個 ADTS 小檔到 `<會議>/rec/`，結束時無損合併成 `source.m4a` 並刪掉小檔；當機留下的 `rec/` 由 `unfinished()` 偵測、`finalize()` 合併；`pending()` 列出有媒體檔但沒有 `project.json` 的會議供頁面一鍵轉錄；`transcribe()` 只是排進佇列，一次只跑一場 `run.py`（同時跑會搶同一顆內顯跑 whisper），排隊的狀態是「排隊中」、佇列不跨 app.py 重開；開始下一場前會等系統裡別處開的 `run.py`（app.py 重開前留下的、命令列開的）跑完；轉錄進度一律從各會議的 `run.log` 解析（app.py 重開後仍看得到） |
 | `static/tailwind.css` → `static/app.css` | 兩個頁面共用的樣式：Tailwind v4，`tailwind.css` 是來源（逐字稿行、按鈕等 JS 動態產生的元件定義成 class），編好的 `app.css` 進 git，使用者不用建置 |
 | `docs/install.md`、`utils/doctor.py`、`start.bat`／`start.sh` | 安裝：給 Claude Code 照做的安裝指南（固定下載網址與 SHA-256、要停下來問使用者的點）；自我檢查（必要／建議／選用，`--online` 驗金鑰，不印金鑰）；啟動捷徑（優先用 `.venv`，`app.py --open` 起來後開瀏覽器）。下載的網址、版本、檢查碼只寫在 `install.md` |
@@ -94,6 +94,7 @@ source.* ─ffmpeg→ audio/16k.m4a ─(>28 分鐘切段)→ Gemini 加詞彙表
 ## 安全與隱私（硬性規則）
 
 - **絕不輸出 API 金鑰的任何部分**，包括「遮罩後」的版本：金鑰格式會變（例如 `AIza…` 改成 `AQ.…`），遮罩規則一失效就整把外洩。要確認兩把金鑰是否相同，由程式內部比較，只印出「相同／不同」。
+- **端點的規矩**（`app.only_own_page()` 靠它擋別的網站）：會改東西、會花錢、會錄音的一律用 POST，內容一律 JSON（前端走 `api()`，它固定帶 JSON 標頭）；GET 不能有副作用；不要用 `get_json(force=True)`，也不要加 CORS 標頭。綁 127.0.0.1 擋不了瀏覽器裡的其他網站。
 - **不 commit 會議內容或人名**：`meetings/`、`glossary.txt`、`.env`、`research/` 底下的私人資料都在 `.gitignore`。新增檔案前先確認不含真實姓名、公司內部資訊或會議原話。
 - **改寫 git 歷史前**：先 `git rm --cached` 並 commit，再改寫歷史；否則 `filter-branch` 最後的 checkout 會刪掉工作目錄裡的檔案。改寫前先打備份 tag。
 
@@ -109,7 +110,7 @@ source.* ─ffmpeg→ audio/16k.m4a ─(>28 分鐘切段)→ Gemini 加詞彙表
 
 ## 驗證方式
 
-- **後端**：用 Flask test client（`app.app.test_client()`），並把 `transcribe_gemini.call` 換成假函式，不實際呼叫 API。測試專案放在臨時資料夾，測完刪除。
+- **後端**：用 Flask test client（`app.app.test_client()`），並把 `transcribe_gemini.call` 換成假函式，不實際呼叫 API。POST 要帶 `json=`（沒有內容也帶 `json={}`），不是 JSON 會被 `only_own_page()` 擋成 403。測試專案放在臨時資料夾，測完刪除。
 - **重建**：先建到暫存資料夾，比對舊專案的 `text`、`status`、`llm_suggestion` 沒有遺失，講者名稱沒有換人。
 - **切段**：用 `ffmpeg -f lavfi -i anullsrc` 產生指定長度的靜音檔測邊界（剛好整除、尾段很短、尾段剛好 2 分鐘）。
 - **前端**：在另一個 port 起測試站（不要動使用者正在用的 5077），到瀏覽器實際操作；有時間競態的動作在同一段 JavaScript 內觸發。
