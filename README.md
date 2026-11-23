@@ -181,7 +181,7 @@ meetings/<YYYY-MM-DD>_<標題>/
 
 ## 開發
 
-開發規則、資料模型與不變量、驗證方式寫在 [`CLAUDE.md`](CLAUDE.md)（也是給 Claude Code 讀的）。歡迎開 issue 或 PR；請勿在 issue 中附上真實會議內容或金鑰。
+開發規則、資料模型與不變量、驗證方式寫在 [`CLAUDE.md`](CLAUDE.md)（也是給 Claude Code 讀的）。自動測試：`pip install -r requirements-dev.txt` 後執行 `python -m pytest`，不需要金鑰，也不會呼叫任何模型。歡迎開 issue 或 PR；請勿在 issue 中附上真實會議內容或金鑰。
 
 ## 授權
 

@@ -1,0 +1,58 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      # 以下照 docs/install.md 的步驟裝環境，順便確認安裝指南裡的版本、網址與檢查碼還有效
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.13.5"
+
+      - name: Python 環境與套件
+        run: |
+          uv venv .venv --python 3.13 --managed-python
+          uv pip install --python .venv -r requirements.txt -r requirements-dev.txt
+
+      - name: ffmpeg（快取）
+        id: ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: vendor/ffmpeg
+          key: ffmpeg-9.0.2-essentials
+
+      - name: ffmpeg（下載並核對檢查碼）
+        if: steps.ffmpeg.outputs.cache-hit != 'true'
+        run: |
+          $zip = "$env:RUNNER_TEMP\ffmpeg-9.0.2-essentials_build.zip"
+          curl.exe -L --fail -o $zip https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne '60F467265B1E312373DBCD92200C2618A74850F98D3D078E94296BB3FA2047BA') { throw 'SHA-256 不符' }
+          New-Item -ItemType Directory -Force "$PWD\vendor\ffmpeg\bin" | Out-Null
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $z = [IO.Compression.ZipFile]::OpenRead($zip)
+          foreach ($n in 'ffmpeg.exe', 'ffprobe.exe') {
+            $e = $z.Entries | Where-Object { $_.FullName -like "*/bin/$n" }
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($e, "$PWD\vendor\ffmpeg\bin\$n", $true)
+          }
+          $z.Dispose()
+
+      - name: 自我檢查（沒有金鑰，只看得到缺金鑰這一項）
+        run: .venv\Scripts\python.exe utils\doctor.py
+        continue-on-error: true
+
+      # 需要麥克風的錄音測試在這裡會自動跳過
+      - name: 測試
+        run: .venv\Scripts\python.exe -m pytest

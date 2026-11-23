@@ -1,0 +1,2 @@
+# 開發用：跑測試（python -m pytest）
+pytest>=8

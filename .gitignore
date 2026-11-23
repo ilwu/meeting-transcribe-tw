@@ -33,3 +33,4 @@ glossary_ignored.txt
 voiceprints.json*
 .venv/
 recorder.log
+.pytest_cache/

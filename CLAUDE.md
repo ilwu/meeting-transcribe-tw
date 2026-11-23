@@ -49,6 +49,7 @@ source.* ─ffmpeg→ audio/16k.m4a ─(>28 分鐘切段)→ Gemini 加詞彙表
 | `static/tailwind.css` → `static/app.css` | 兩個頁面共用的樣式：Tailwind v4，`tailwind.css` 是來源（逐字稿行、按鈕等 JS 動態產生的元件定義成 class），編好的 `app.css` 進 git，使用者不用建置 |
 | `docs/install.md`、`utils/doctor.py`、`start.bat`／`start.sh` | 安裝：給 Claude Code 照做的安裝指南（固定下載網址與 SHA-256、要停下來問使用者的點）；自我檢查（必要／建議／選用，`--online` 驗金鑰，不印金鑰）；啟動捷徑（優先用 `.venv`，`app.py --open` 起來後開瀏覽器）。下載的網址、版本、檢查碼只寫在 `install.md` |
 | `pipeline/bundled.py` | `use_bundled_ffmpeg()`：有 `vendor/ffmpeg/bin` 就放到 PATH 最前面；`app.py`、`run.py`、`voiceprints.py` 的入口會呼叫 |
+| `tests/`、`.github/workflows/tests.yml` | 自動測試（pytest）：`conftest.py` 把資料位置導到暫存資料夾，`helpers.py` 做假會議與合成音檔；模型一律用假函式。GitHub Actions 在 Windows 上照 `docs/install.md` 的步驟裝環境後跑同一套測試 |
 | `utils/` | 其他與主流程無關的小工具 |
 | `research/scripts/` | 9 月引擎比較的一次性實驗腳本，封存不維護 |
 
@@ -110,6 +111,7 @@ source.* ─ffmpeg→ audio/16k.m4a ─(>28 分鐘切段)→ Gemini 加詞彙表
 
 ## 驗證方式
 
+- **自動測試**：`python -m pytest`（約 40 秒；要先 `pip install -r requirements-dev.txt`）。改了行為就補測試，修錯誤先寫一個會失敗的測試。新測試要確認它真的抓得到問題：把對應的程式暫時改壞，測試應該失敗。測試不碰真的會議資料、聲紋與詞彙表，也不呼叫模型；需要麥克風的錄音測試在沒有裝置的機器上會自動跳過，改錄音相關的程式要在有麥克風的電腦上跑。下面幾項是自動測試涵蓋不到、要手動做的。
 - **後端**：用 Flask test client（`app.app.test_client()`），並把 `transcribe_gemini.call` 換成假函式，不實際呼叫 API。POST 要帶 `json=`（沒有內容也帶 `json={}`），不是 JSON 會被 `only_own_page()` 擋成 403。測試專案放在臨時資料夾，測完刪除。
 - **重建**：先建到暫存資料夾，比對舊專案的 `text`、`status`、`llm_suggestion` 沒有遺失，講者名稱沒有換人。
 - **切段**：用 `ffmpeg -f lavfi -i anullsrc` 產生指定長度的靜音檔測邊界（剛好整除、尾段很短、尾段剛好 2 分鐘）。
@@ -125,5 +127,6 @@ python pipeline/run.py meetings/<資料夾>            # 一個指令跑完（--
 python app.py                                        # 校對工具 http://127.0.0.1:5077
 python pipeline/build_project.py <資料夾> <audio> --whisper <json> p1.txt:0 p2.txt:1560 ...
 python pipeline/compare.py gemini=<txt> whisper=<json> teams=<vtt>
+python -m pytest                                     # 自動測試（pip install -r requirements-dev.txt）
 vendor/tailwindcss/tailwindcss.exe -i static/tailwind.css -o static/app.css --minify   # 改 UI 後重產樣式
 ```
