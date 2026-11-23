@@ -1,0 +1,20 @@
+{
+ "title": "產品週會（示範）",
+ "date": "2026-01-15",
+ "source": {
+  "file": "source.m4a",
+  "duration_sec": 81,
+  "note": "語音合成的示範會議，內容與人名虛構（見 demo/README.md）"
+ },
+ "participants": [],
+ "transcripts": {
+  "gemini-3.6-flash": "gemini-3.6-flash（失敗時降級 gemini-3.8-flash）+ 詞彙表提示詞，pipeline/run.py（2026-11-23）",
+  "whisper-turbo": "Vibe large-v3-turbo，講者分離 + VAD，pipeline/run.py（2026-11-23）"
+ },
+ "status": "已轉錄，待校對",
+ "silent_ranges": [],
+ "audio": {
+  "file": "audio/16k.m4a",
+  "note": "16 kHz 單聲道 AAC 48 kbps，校對工具與重聽用"
+ }
+}

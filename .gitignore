@@ -34,3 +34,8 @@ voiceprints.json*
 .venv/
 recorder.log
 .pytest_cache/
+
+# 示範會議（demo/）是語音合成的、內容虛構，音檔與詞彙表都要進 git。
+# 這一段要留在最後：後面的規則才蓋得過上面的 *.m4a 與 glossary.txt
+!demo/**/*.m4a
+!demo/**/glossary.txt

@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,7 +27,19 @@ import fillers as fillers_mod  # noqa: E402  清語助詞
 import voiceprints  # noqa: E402  聲紋
 from bundled import use_bundled_ffmpeg  # noqa: E402
 use_bundled_ffmpeg()
-recorder.MEETINGS.mkdir(exist_ok=True)               # 全新安裝還沒有會議資料夾；錄音、待轉錄清單都要它在
+
+
+def seed_meetings(meetings, demo):
+    """全新安裝第一次啟動：建立會議資料夾（錄音、待轉錄清單都要它在），並放進示範會議，打開就有一場可以試。
+    只在資料夾還不存在時做：使用者之後把示範會議刪掉，不會再跑回來。"""
+    if meetings.exists():
+        return
+    meetings.mkdir(parents=True)
+    for project in sorted(demo.glob("*/project.json")):
+        shutil.copytree(project.parent, meetings / project.parent.name)
+
+
+seed_meetings(recorder.MEETINGS, ROOT / "demo")
 # 校對專案：每個資料夾一個 project.json，專案名稱即資料夾名
 PROJECT_GLOBS = ["meetings/*/project.json", "research/projects/*/project.json"]
 app = Flask(__name__, static_folder=str(ROOT / "static"), static_url_path="/static")
