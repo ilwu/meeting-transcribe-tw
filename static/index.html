@@ -25,7 +25,7 @@
     </div>
     <div class="mt-4 px-4 text-xs font-semibold tracking-wide text-slate-500">會議</div>
     <div id="meetings" class="mt-1 min-h-0 flex-1 space-y-0.5 overflow-auto px-2 pb-3"></div>
-    <a href="/record" class="flex items-center gap-2 border-t border-slate-800 px-4 py-3 hover:bg-slate-800"><span class="size-2.5 rounded-full bg-red-500"></span>錄一場實體會議</a>
+    <a href="/record" class="flex items-center gap-2 border-t border-slate-800 px-4 py-3 hover:bg-slate-800"><span class="size-2.5 rounded-full bg-red-500"></span>錄一場會議</a>
   </nav>
 
   <!-- 中欄：逐字稿 -->
@@ -35,9 +35,10 @@
         <div class="min-w-0">
           <h1 id="title" class="truncate text-lg font-semibold text-slate-900"></h1>
           <div id="meta" class="muted"></div>
+          <div id="warn" class="mt-1 hidden text-xs text-amber-700"></div>
         </div>
         <div class="ml-auto h-1.5 w-40 shrink-0 rounded-full bg-slate-200"><div id="bar" class="h-full w-0 rounded-full bg-emerald-500"></div></div>
-        <button id="export" class="btn btn-primary" title="匯出校對版（選存檔位置；會議資料夾也會留一份 corrected.md）">匯出</button>
+        <button id="export" class="btn btn-primary shrink-0" title="匯出校對版（選存檔位置；會議資料夾也會留一份 corrected.md）">匯出</button>
       </div>
       <div id="filters" class="mt-3 flex items-center gap-5 overflow-x-auto">
         <button class="tab on" data-f="all">全部 <span></span></button>
@@ -135,7 +136,7 @@ function renderNav(){
   nav.innerHTML = OV.map(m => {
     const pct = m.total ? Math.round(100 * m.done / m.total) : 0, on = m.name === name;
     return `<a data-p="${esc(m.name)}" class="block cursor-pointer rounded-lg px-2 py-2 ${on ? 'bg-slate-800 text-white' : 'hover:bg-slate-800'}" title="${esc(m.name)}">
-      <div class="flex justify-between gap-2"><span class="truncate">${esc(m.title)}</span><span class="shrink-0 text-xs text-slate-500">${esc(m.date.slice(5).replace('-', '/'))}</span></div>
+      <div class="flex justify-between gap-2"><span class="truncate">${m.silent?.length ? '<span class="text-amber-400" title="錄影有一段完全沒有聲音">⚠ </span>' : ''}${esc(m.title)}</span><span class="shrink-0 text-xs text-slate-500">${esc(m.date.slice(5).replace('-', '/'))}</span></div>
       <div class="mt-1.5 h-1 rounded-full bg-slate-700"><div class="h-full rounded-full bg-emerald-400" style="width:${pct}%"></div></div></a>`;
   }).join('');
   nav.scrollTop = y;
@@ -191,6 +192,11 @@ async function loadProject(n){
   $('#nowPlaying').textContent = '尚未播放';
   const m = OV.find(x => x.name === n) || {title: n, date: ''};
   $('#title').textContent = m.title; document.title = `${m.title}｜逐字稿校對`;
+  const silent = (m.silent || []).filter(([a, b]) => b > a);
+  $('#warn').textContent = silent.length ? '⚠ 錄影這幾段完全沒有聲音，逐字稿會缺這段：'
+    + silent.map(([a, b]) => `${fmt(a)}～${fmt(b)}（${Math.round((b - a) / 60)} 分鐘）`).join('、')
+    + '。常見原因是開錄的人把麥克風靜音，或電腦切換了音訊裝置。' : '';
+  $('#warn').classList.toggle('hidden', !silent.length);
   focusId = null; renderNav(); renderSpeakers(); renderList(); updateStat(); scroller.scrollTop = 0;
   if (curTab === 'notes') openNotes();
 }

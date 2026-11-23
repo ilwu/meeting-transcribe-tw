@@ -32,3 +32,4 @@ glossary_ignored.txt
 # 聲紋資料庫（同事的聲音特徵，只在本機）
 voiceprints.json*
 .venv/
+recorder.log

@@ -22,6 +22,10 @@
       <label for="device" class="muted mb-1 block">麥克風</label>
       <select id="device" class="field py-2"></select>
     </div>
+    <div id="loopbackRow" class="hidden">
+      <label class="flex items-center gap-2"><input type="checkbox" id="loopback" class="accent-indigo-600"> 同時錄電腦播出的聲音（遠端會議）</label>
+      <div class="muted mt-1 pl-6">線上會議、用喇叭或耳機聽對方時要勾：筆電麥克風會把喇叭播出的聲音當成回音消掉，不勾就錄不到對方。電腦播出的所有聲音都會錄進去，開會時請關掉通知音與其他影音。</div>
+    </div>
     <div class="flex items-center gap-3">
       <label class="flex items-center gap-2"><input type="checkbox" id="auto" checked class="accent-indigo-600"> 錄完自動轉逐字稿</label>
       <button id="start" class="btn ml-auto bg-red-600 px-5 py-2 font-semibold text-white ring-red-600 hover:bg-red-500">● 開始錄音</button>
@@ -32,7 +36,7 @@
     <div class="flex items-center gap-2"><span class="size-3 animate-pulse rounded-full bg-red-500"></span><b id="curTitle"></b> <span id="curFolder" class="muted"></span></div>
     <div id="timer" class="text-5xl font-semibold tracking-wide tabular-nums">00:00:00</div>
     <div>
-      <div class="muted">音量 <span id="db">—</span></div>
+      <div class="muted">音量 <span id="db">—</span><span id="lbdb"></span></div>
       <div class="mt-1.5 h-3.5 overflow-hidden rounded-full bg-slate-200"><div id="bar" class="h-full w-0 bg-emerald-500 transition-[width]"></div></div>
     </div>
     <div id="silent" class="rounded-lg bg-orange-50 px-3 py-2.5 text-orange-800 ring-1 ring-orange-200" style="display:none"></div>
@@ -94,14 +98,18 @@ function render(st){
   try { renderInner(st); } catch (e) { console.error(e); $('#items').innerHTML = `<li class="muted">清單顯示失敗：${esc(e.message)}（可能需要重開 app.py）</li>`; }
 }
 function renderInner(st){
+  $('#loopbackRow').classList.toggle('hidden', !st.loopback_available);
   lastState = st;
   const r = st.recording;
   $('#idle').classList.toggle('hidden', !!r); $('#busy').classList.toggle('hidden', !r);
   if (r) {
-    $('#curTitle').textContent = r.title; $('#curFolder').textContent = r.folder;
+    $('#curTitle').textContent = r.title; $('#curFolder').textContent = r.folder + (r.loopback ? '（含電腦播出的聲音）' : '');
     $('#timer').textContent = hms(r.elapsed);
     const db = r.level_db;
     $('#db').textContent = db == null ? '—' : `${db} dB`;
+    // 電腦聲音太小代表會議軟體的聲音沒收進來（例如對方還沒講話，或沒有任何喇叭在播）
+    $('#lbdb').textContent = !r.loopback ? '' : r.loopback_db == null ? '　電腦聲音 —'
+      : `　電腦聲音 ${r.loopback_db > -60 ? '有收到' : '目前沒聲音'}（${r.loopback_db} dB）`;
     $('#bar').style.width = db == null ? '0' : Math.max(0, Math.min(100, (db + 60) / 60 * 100)) + '%';
     const msg = levelAlert(db);
     $('#silent').textContent = msg; $('#silent').style.display = msg ? 'block' : 'none';
@@ -140,7 +148,7 @@ async function poll(){
 }
 $('#start').onclick = async () => {
   $('#start').disabled = true;
-  try { render(await api('/api/rec/start', {title: $('#title').value, device: $('#device').value, auto_transcribe: $('#auto').checked})); }
+  try { render(await api('/api/rec/start', {title: $('#title').value, device: $('#device').value, auto_transcribe: $('#auto').checked, loopback: $('#loopback').checked})); }
   catch (e) { alertBox(e.message); }
   $('#start').disabled = false;
 };
@@ -156,7 +164,8 @@ $('#pending').onclick = async e => {
   try { render(await api('/api/rec/transcribe/' + encodeURIComponent(f), {})); } catch (err) { alertBox(err.message); }
 };
 $('#items').onclick = async e => { const f = e.target.dataset.fin; if (f) { e.target.disabled = true; render(await api('/api/rec/finalize/' + encodeURIComponent(f), {})); } };
-function alertBox(msg){ const el = $('#msg'); el.textContent = msg; el.style.display = 'block'; setTimeout(() => el.style.display = 'none', 5000); }
+// 錯誤要留著讓使用者看完或截圖，按 ✕ 才關
+function alertBox(msg){ const el = $('#msg'); el.innerHTML = `<button class="float-right ml-3 cursor-pointer" onclick="this.parentElement.style.display='none'">✕</button>${esc(msg)}`; el.style.display = 'block'; }
 loadDevices(); poll();
 </script>
 </body>

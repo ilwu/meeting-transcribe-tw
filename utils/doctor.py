@@ -141,6 +141,12 @@ def main():
     spk = (ROOT / "vendor/models/spk").exists()
     add("選用", True if vp else (False if spk else None),
         "聲紋（sherpa-onnx 與模型）" if vp else ("聲紋裝了一半（見 docs/install.md「聲紋」）" if spk else "聲紋未安裝"))
+    if WIN:
+        try:
+            importlib.import_module("soundcard")
+            add("選用", True, "錄音頁可以同時錄電腦播出的聲音（遠端會議）")
+        except Exception:
+            add("選用", False, "沒有 soundcard：錄音頁不能錄電腦播出的聲音；uv pip install --python .venv -r requirements.txt")
 
     #====================================
     # 校對工具是否已在執行

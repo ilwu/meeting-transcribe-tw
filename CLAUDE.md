@@ -45,7 +45,7 @@ source.* ─ffmpeg→ audio/16k.m4a ─(>28 分鐘切段)→ Gemini 加詞彙表
 | `pipeline/textutil.py` | 共用的文字正規化 `norm` 與 `cer` |
 | `pipeline/compare.py` | 多份逐字稿兩兩 CER（支援 txt、Teams vtt、whisper json） |
 | `app.py`、`static/index.html` | 校對工具（Flask + 單頁 HTML，三欄：會議清單／逐字稿／講者・AI 工具・會議紀錄），port 5077；`/api/projects/overview` 給左欄（標題、日期、進度，依 mtime 快取）；`/api/project` 另附 `transcripts/screen_timeline.json`（不寫回 project.json），`/frame/<專案>/<檔名>` 提供截圖；`/api/search` 跨會議搜尋 `text`（依 project.json 的 mtime 快取） |
-| `recorder.py`、`static/record.html` | 實體會議錄音（`/record`）：ffmpeg dshow 錄麥克風，每 `SEGMENT_SEC` 秒存一個 ADTS 小檔到 `<會議>/rec/`，結束時無損合併成 `source.m4a` 並刪掉小檔；當機留下的 `rec/` 由 `unfinished()` 偵測、`finalize()` 合併；`pending()` 列出有媒體檔但沒有 `project.json` 的會議供頁面一鍵轉錄；`transcribe()` 只是排進佇列，一次只跑一場 `run.py`（同時跑會搶同一顆內顯跑 whisper），排隊的狀態是「排隊中」、佇列不跨 app.py 重開；開始下一場前會等系統裡別處開的 `run.py`（app.py 重開前留下的、命令列開的）跑完；轉錄進度一律從各會議的 `run.log` 解析（app.py 重開後仍看得到） |
+| `recorder.py`、`static/record.html` | 錄音（`/record`）：ffmpeg dshow 錄麥克風；勾「同時錄電腦播出的聲音」時改由 `_capture_mix()` 用 soundcard 抓麥克風與**所有喇叭**的 WASAPI loopback（會議軟體可自己指定喇叭，不一定是 Windows 預設）、以麥克風為時鐘混成單聲道（每個喇叭一條 `_loopback_reader()` 頻繁讀取，沒有資料的時段補靜音；打不開的喇叭略過）；開錄前 `_probe_loopback()` 先試開，失敗不建資料夾，從 stdin 交給同一個 ffmpeg；每 `SEGMENT_SEC` 秒存一個 ADTS 小檔到 `<會議>/rec/`，結束時無損合併成 `source.m4a` 並刪掉小檔；當機留下的 `rec/` 由 `unfinished()` 偵測、`finalize()` 合併；`pending()` 列出有媒體檔但沒有 `project.json` 的會議供頁面一鍵轉錄；`transcribe()` 只是排進佇列，一次只跑一場 `run.py`（同時跑會搶同一顆內顯跑 whisper），排隊的狀態是「排隊中」、佇列不跨 app.py 重開；開始下一場前會等系統裡別處開的 `run.py`（app.py 重開前留下的、命令列開的）跑完；轉錄進度一律從各會議的 `run.log` 解析（app.py 重開後仍看得到） |
 | `static/tailwind.css` → `static/app.css` | 兩個頁面共用的樣式：Tailwind v4，`tailwind.css` 是來源（逐字稿行、按鈕等 JS 動態產生的元件定義成 class），編好的 `app.css` 進 git，使用者不用建置 |
 | `docs/install.md`、`utils/doctor.py`、`start.bat`／`start.sh` | 安裝：給 Claude Code 照做的安裝指南（固定下載網址與 SHA-256、要停下來問使用者的點）；自我檢查（必要／建議／選用，`--online` 驗金鑰，不印金鑰）；啟動捷徑（優先用 `.venv`，`app.py --open` 起來後開瀏覽器）。下載的網址、版本、檢查碼只寫在 `install.md` |
 | `pipeline/bundled.py` | `use_bundled_ffmpeg()`：有 `vendor/ffmpeg/bin` 就放到 PATH 最前面；`app.py`、`run.py`、`voiceprints.py` 的入口會呼叫 |
@@ -54,7 +54,7 @@ source.* ─ffmpeg→ audio/16k.m4a ─(>28 分鐘切段)→ Gemini 加詞彙表
 
 ## 資料模型與不變量（改程式前必讀）
 
-會議資料夾 `meetings/<YYYY-MM-DD>_<標題>/`（日期後面用 `-` 或 `_` 都可以，`import_raw()` 兩種都認）：`source.*`（原檔，不動）、`audio/`（可重建）、`transcripts/`（各引擎原始稿）、`meeting.json`（分段位移與說明）、`project.json`（校對狀態）、`glossary.txt`（本場詞彙，選用）。
+會議資料夾 `meetings/<YYYY-MM-DD>_<標題>/`（日期後面用 `-` 或 `_` 都可以，`import_raw()` 兩種都認）：`source.*`（原檔，不動）、`audio/`（可重建）、`transcripts/`（各引擎原始稿）、`meeting.json`（分段位移與說明；`silent_ranges` 是超過 1 分鐘的完全無聲時段、`silent_tail_from_sec` 是結尾無聲的起點，校對工具據此顯示警告）、`project.json`（校對狀態）、`glossary.txt`（本場詞彙，選用）。
 
 `project.json` 每行（segment）的欄位：
 
@@ -104,6 +104,7 @@ source.* ─ffmpeg→ audio/16k.m4a ─(>28 分鐘切段)→ Gemini 加詞彙表
 - **會議資料夾裡的檔案要先核對**：可能放錯別場的影片或 `teams.vtt`。比對長度、md5、畫面內容後再處理。
 - **Teams 錄影可能有一段完全無聲**（-91 dB）：`run.speech_end()` 會略過結尾無聲；中段無聲要提醒使用者。
 - **測試別碰真資料**：UI 測試在另一個 port、用 `meetings/_xxx` 暫存複本，測完刪；會寫入 `voiceprints.json`、`glossary.txt` 的測試要先備份、測完還原。
+- **soundcard 每條執行緒都要初始化 COM**（`recorder._com()`）：soundcard 只在第一次 import 時替那條執行緒初始化，app.py 裡那條是早已結束的網頁請求執行緒，新執行緒一碰裝置就出 `0x800401f0`。測試腳本在主執行緒 import 會把問題蓋掉，要照 app.py 的樣子：先在一條短命執行緒裡 import，再到另一條執行緒開裝置。
 - **Windows 的 Bash heredoc 會吃掉反斜線**：多行 Python 先寫成檔再跑。
 
 ## 驗證方式

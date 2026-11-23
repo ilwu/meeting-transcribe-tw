@@ -243,6 +243,39 @@ def speech_end(audio):
     return dur, dur
 
 
+SILENT_MIN_SEC = 60          # 完全無聲超過這麼久才警告：會議中的正常停頓不會這麼長
+
+
+def silent_ranges(audio):
+    """整段裡超過 1 分鐘的「完全無聲」（數位靜音，例如 Teams 錄影時開錄的人把麥克風靜音），回傳 [[起, 迄], ...] 秒。
+    門檻用 -80 dB：真的沒錄到聲音是 -91 dB，有人在但沒講話的背景音通常在 -60 dB 以上，不會被誤判。"""
+    #====================================
+    # 用 ffmpeg 找出靜音段
+    #====================================
+    dur = ffprobe_duration(audio)
+    r = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(audio), "-af", f"silencedetect=n=-80dB:d={SILENT_MIN_SEC}",
+                        "-f", "null", "-"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+    #====================================
+    # 整理成 [起, 迄]
+    #====================================
+    starts = [float(x) for x in re.findall(r"silence_start: ([\d.]+)", r.stderr)]
+    ends = [float(x) for x in re.findall(r"silence_end: ([\d.]+)", r.stderr)]
+    ends += [dur] * (len(starts) - len(ends))            # 一直靜音到檔尾時，舊版 ffmpeg 不會印 silence_end
+    return [[round(a), round(min(b, dur))] for a, b in zip(starts, ends)]
+
+
+def whisper_input(mdir, audio, meta, force):
+    """結尾有一大段無聲時，只把有聲音的部分給 whisper：聽靜音很花時間，還會產生大量幻覺。時間從 0 起算，時間戳不受影響。"""
+    end = meta.get("silent_tail_from_sec")
+    if not end:
+        return audio
+    p = mdir / "audio/speech.m4a"
+    if not p.exists() or force:
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-t", str(end), "-i", str(audio), "-c", "copy", str(p)], check=True)
+    return p
+
+
 def prepare_audio(mdir, force):
     """source.* → audio/16k.m4a（16 kHz 單聲道 AAC 48 kbps）。"""
     out = mdir / "audio/16k.m4a"
@@ -427,8 +460,13 @@ def main():
 
     audio = prepare_audio(mdir, force)
     parts = split(mdir, audio, meta, force)
+    if "silent_ranges" not in meta or force:
+        meta["silent_ranges"] = silent_ranges(audio)
+    for a, b in meta["silent_ranges"]:
+        log(f"⚠ {a // 60:02d}:{a % 60:02d}～{b // 60:02d}:{b % 60:02d} 完全沒有聲音（{(b - a) / 60:.0f} 分鐘）："
+            "錄影這段沒錄到聲音，逐字稿會缺這段")
     with ThreadPoolExecutor(max_workers=1) as pool:  # whisper 在本機跑，與 Gemini 同時進行
-        wfut = pool.submit(run_whisper, mdir, audio, gl, force) if use_whisper else None
+        wfut = pool.submit(run_whisper, mdir, whisper_input(mdir, audio, meta, force), gl, force) if use_whisper else None
         single = len(parts) == 1
         txts = [transcribe_part(p, mdir / f"transcripts/{model}" if single else mdir / f"transcripts/{model}.p{i}",
                                 model, gl, key, force) for i, (p, _) in enumerate(parts, 1)]

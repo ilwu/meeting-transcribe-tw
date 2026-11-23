@@ -4,7 +4,11 @@
   已寫入的部分都還能用；結束時再無損合併成 source.m4a。
 - 「結束並開始下一場」：先啟動下一場的 ffmpeg，再在背景合併上一場，兩場之間幾乎沒有空檔。
 - 錄音期間呼叫 SetThreadExecutionState 防止 Windows 睡眠。
+- 遠端會議可以同時錄「電腦播出的聲音」（WASAPI loopback，soundcard 套件）：筆電麥克風陣列的回音消除
+  會把喇叭播出的遠端聲音消掉，只靠麥克風錄不到對方。這時改由 Python 抓麥克風與所有喇叭的系統音訊、混成單聲道，
+  再交給 ffmpeg 用同樣的方式分段存檔。
 """
+import contextlib
 import json
 import re
 import subprocess
@@ -58,13 +62,13 @@ def _new_folder(title):
     return d
 
 
-def start(title, device=None, auto_transcribe=False):
+def start(title, device=None, auto_transcribe=False, loopback=False):
     with _lock:
-        _start_locked(title, device, auto_transcribe)
+        _start_locked(title, device, auto_transcribe, loopback=loopback)
     return status()
 
 
-def _start_locked(title, device, auto_transcribe, replacing=False):
+def _start_locked(title, device, auto_transcribe, replacing=False, loopback=False):
     """呼叫端必須持有 _lock。replacing=True 時由 stop() 用來無縫接下一場（目前那場由呼叫端收尾）。"""
     if _state["rec"] and not replacing:
         raise RuntimeError("已經在錄音中")
@@ -73,25 +77,176 @@ def _start_locked(title, device, auto_transcribe, replacing=False):
         device = devices[0] if devices else None
     if not device:
         raise RuntimeError("找不到麥克風")
+    if loopback and not loopback_available():
+        raise RuntimeError("錄電腦播出的聲音需要 soundcard 套件（uv pip install --python .venv soundcard），而且只支援 Windows")
+    if loopback:
+        _probe_loopback(device)
     d = _new_folder(title)
     meta = {"title": title.strip() or "會議", "date": f"{datetime.now():%Y-%m-%d}",
-            "source": {"file": "source.m4a", "note": f"recorder.py 錄音，裝置：{device}"},
-            "recording": {"started": datetime.now().isoformat(timespec="seconds"), "device": device},
+            "source": {"file": "source.m4a", "note": f"recorder.py 錄音，裝置：{device}" + ("＋電腦播出的聲音" if loopback else "")},
+            "recording": {"started": datetime.now().isoformat(timespec="seconds"), "device": device, "loopback": bool(loopback)},
             "participants": [], "transcripts": {}, "status": "錄音中",
             "auto_transcribe": bool(auto_transcribe)}
     (d / "meeting.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     # 音量：每 0.25 秒算一次 RMS，寫到 level.log（只讀最後一行）
     af = "asetnsamples=n=12000,astats=metadata=1:reset=1,ametadata=mode=print:key=lavfi.astats.Overall.RMS_level:file=level.log:direct=1"
-    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "dshow", "-i", f"audio={device}",
+    # 只錄麥克風時 ffmpeg 直接讀 dshow；加錄電腦聲音時改讀 Python 混好的 PCM（stdin）
+    src = ["-f", "f32le", "-ar", str(SAMPLE_RATE), "-ac", "1", "-i", "pipe:0"] if loopback else ["-f", "dshow", "-i", f"audio={device}"]
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", *src,
            "-af", af, "-ac", "1", "-ar", str(SAMPLE_RATE), "-c:a", "aac", "-b:a", BITRATE,
            "-f", "segment", "-segment_time", str(SEGMENT_SEC), "-segment_format", "adts",
            "-reset_timestamps", "1", "part%04d.aac"]
     log = open(d / "rec" / "ffmpeg.log", "w", encoding="utf-8")
     proc = subprocess.Popen(cmd, cwd=d / "rec", stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT)
     _state["rec"] = {"proc": proc, "dir": d, "title": meta["title"], "device": device, "t0": time.time(),
-                     "auto": bool(auto_transcribe), "log": log}
+                     "auto": bool(auto_transcribe), "log": log, "loopback": bool(loopback)}
+    if loopback:
+        stop_evt = threading.Event()
+        meter = {"loopback_db": None}
+        th = threading.Thread(target=_capture_mix, args=(proc, device, stop_evt, d / "rec" / "capture.log", meter), daemon=True)
+        th.start()
+        _state["rec"].update(stop=stop_evt, capture=th, meter=meter)
     if not any(t.name == "keep-awake" and t.is_alive() for t in threading.enumerate()):
         threading.Thread(target=_keep_awake_loop, name="keep-awake", daemon=True).start()
+
+
+MIX_BLOCK = SAMPLE_RATE // 10                         # 每 0.1 秒混一次，以麥克風為時鐘
+LOOPBACK_MAX_LAG = SAMPLE_RATE // 2                    # 系統音訊累積超過半秒就丟掉舊的，兩個裝置的時鐘不會越差越多
+
+
+def loopback_available():
+    if sys.platform != "win32":
+        return False
+    try:
+        import soundcard  # noqa: F401
+        return True
+    except Exception:                                    # 沒裝、或音效裝置初始化失敗
+        return False
+
+
+@contextlib.contextmanager
+def _com():
+    """soundcard 底層是 Windows 的 COM：每一條用到它的執行緒都要先初始化。soundcard 只在第一次 import 時替那條執行緒做，
+    app.py 裡那條常常是早已結束的網頁請求執行緒，之後開錄音的新執行緒一碰裝置就出 0x800401f0（CO_E_NOTINITIALIZED）。"""
+    if sys.platform != "win32":
+        yield
+        return
+    import ctypes
+    hr = ctypes.windll.ole32.CoInitializeEx(None, 0)   # 0 = COINIT_MULTITHREADED
+    try:
+        yield
+    finally:
+        if hr in (0, 1):                                 # S_OK、S_FALSE 都要配對釋放；換模式失敗的不釋放
+            ctypes.windll.ole32.CoUninitialize()
+
+
+def _open_sources(device):
+    """回傳 (麥克風, [(喇叭名稱, loopback 裝置)])。錄「所有」喇叭：會議軟體可以自己指定喇叭，
+    不一定是 Windows 的預設（實測 Teams 從筆電喇叭出聲時，預設卻是外接螢幕，只錄預設的會整段沒有對方的聲音）。"""
+    import warnings
+    import soundcard as sc
+    warnings.filterwarnings("ignore", message="data discontinuity")
+    mic = next((m for m in sc.all_microphones() if m.name == device), None) or sc.default_microphone()
+    return mic, [(spk.name, sc.get_microphone(id=str(spk.id), include_loopback=True)) for spk in sc.all_speakers()]
+
+
+def _probe_loopback(device):
+    """開錄前先實際打開麥克風與每個喇叭的系統音訊各讀一小段：麥克風或全部喇叭都打不開，就在建資料夾之前說清楚。"""
+    with _com():
+        #====================================
+        # 試開麥克風
+        #====================================
+        try:
+            mic, speakers = _open_sources(device)
+            with mic.recorder(samplerate=SAMPLE_RATE, channels=1, blocksize=480) as r:
+                r.record(numframes=None)
+        except Exception as e:
+            raise RuntimeError(f"打不開麥克風：{type(e).__name__}: {e}") from e
+
+        #====================================
+        # 試開每個喇叭的系統音訊
+        #====================================
+        errors = []
+        for name, lb in speakers:
+            try:
+                with lb.recorder(samplerate=SAMPLE_RATE, blocksize=480) as r:
+                    r.record(numframes=None)
+            except Exception as e:
+                errors.append(f"{name}（{type(e).__name__}: {e}）")
+
+    #====================================
+    # 全部喇叭都打不開才算失敗
+    #====================================
+    # 個別打不開的（例如被別的程式獨占）錄音時會略過，其他喇叭照錄
+    if len(errors) == len(speakers):
+        raise RuntimeError("打不開任何喇叭的系統音訊：" + "；".join(errors) if errors else "找不到任何喇叭")
+
+
+def _loopback_reader(name, lb, buf, lock, stop, log_path):
+    """一直讀這個喇叭的系統音訊放進 buf。要頻繁讀：讀太慢緩衝區會溢出、資料被丟掉（實測每 0.1 秒讀一次只拿到一成）。
+    打不開的喇叭記一筆就結束，其他喇叭照錄。"""
+    try:
+        with _com(), lb.recorder(samplerate=SAMPLE_RATE, blocksize=480) as r:
+            while not stop.is_set():
+                x = r.record(numframes=None)
+                if len(x):
+                    with lock:
+                        buf.append(x.mean(axis=1) if x.ndim > 1 else x)
+                else:
+                    time.sleep(0.005)
+    except Exception as e:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"略過喇叭 {name}：{type(e).__name__}: {e}\n")
+
+
+def _capture_mix(proc, device, stop, log_path, meter):
+    """麥克風＋所有喇叭播出的聲音混成單聲道 float32，寫進 ffmpeg 的 stdin；結束或出錯都會關掉 stdin 讓 ffmpeg 收尾。
+    meter["loopback_db"] 是最近 0.1 秒電腦聲音的音量，給錄音頁確認對方的聲音有沒有收進來。"""
+    try:
+        from collections import deque
+        import numpy as np
+        #====================================
+        # 開裝置：每個喇叭一條讀取執行緒
+        #====================================
+        com = contextlib.ExitStack()
+        com.enter_context(_com())                        # 這條執行緒結束（finally）時才釋放
+        mic, speakers = _open_sources(device)
+        lock = threading.Lock()
+        bufs = [deque() for _ in speakers]
+        for (name, lb), buf in zip(speakers, bufs):
+            threading.Thread(target=_loopback_reader, args=(name, lb, buf, lock, stop, log_path), daemon=True).start()
+        pending = [np.zeros(0, dtype=np.float32) for _ in speakers]
+        #====================================
+        # 以麥克風為時鐘混音：沒有聲音播放時系統音訊不送資料，缺的補靜音
+        #====================================
+        with mic.recorder(samplerate=SAMPLE_RATE, channels=1, blocksize=480) as mr:
+            while not stop.is_set():
+                m = mr.record(numframes=MIX_BLOCK)[:, 0].astype(np.float32)
+                loop = np.zeros_like(m)
+                with lock:
+                    for i, buf in enumerate(bufs):
+                        if buf:
+                            pending[i] = np.concatenate([pending[i], *buf])
+                            buf.clear()
+                for i in range(len(pending)):
+                    if len(pending[i]) > LOOPBACK_MAX_LAG:
+                        pending[i] = pending[i][-MIX_BLOCK:]
+                    n = min(len(m), len(pending[i]))
+                    loop[:n] += pending[i][:n]
+                    pending[i] = pending[i][n:]
+                rms = float(np.sqrt(np.mean(loop ** 2)))
+                meter["loopback_db"] = round(20 * np.log10(rms), 1) if rms > 1e-6 else -120.0
+                proc.stdin.write(np.clip(m + loop, -1, 1).astype("<f4").tobytes())
+    except Exception as e:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"錄電腦聲音失敗：{type(e).__name__}: {e}\n")
+    finally:
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
+        if "com" in locals():
+            com.close()
 
 
 def _level_db(d):
@@ -109,14 +264,17 @@ def status():
     rec = None
     if r:
         alive = r["proc"].poll() is None
-        rec = {"title": r["title"], "folder": r["dir"].name, "device": r["device"], "alive": alive,
+        rec = {"title": r["title"], "folder": r["dir"].name, "device": r["device"], "alive": alive, "loopback": r["loopback"],
+               "loopback_db": r.get("meter", {}).get("loopback_db"),
                "elapsed": round(time.time() - r["t0"]), "level_db": _level_db(r["dir"]),
                "segments": len(list((r["dir"] / "rec").glob("part*.aac")))}
         if not alive:
-            rec["error"] = (r["dir"] / "rec" / "ffmpeg.log").read_text(encoding="utf-8", errors="replace")[-300:]
+            logs = [r["dir"] / "rec" / f for f in ("capture.log", "ffmpeg.log")]
+            rec["error"] = "".join(f.read_text(encoding="utf-8", errors="replace") for f in logs if f.exists())[-300:]
     transcribing = {k: _transcribe_state(v) for k, v in _all_jobs().items()}
     return {"recording": rec, "finalizing": dict(_state["finalizing"]), "transcribing": transcribing,
-            "unfinished": [d.parent.name for d in unfinished()], "pending": pending(transcribing)}
+            "unfinished": [d.parent.name for d in unfinished()], "pending": pending(transcribing),
+            "loopback_available": loopback_available()}
 
 
 MEDIA_EXT = {".mp4", ".m4a", ".mp3", ".wav", ".webm", ".mkv", ".mov", ".aac", ".flac", ".ogg", ".wma"}
@@ -205,13 +363,18 @@ def stop(next_title=None):
         next_error = None
         if next_title is not None:
             try:                                         # 先開下一場再換掉這一場，狀態不會出現「沒在錄」的空檔
-                _start_locked(next_title, r["device"], r["auto"], replacing=True)
+                _start_locked(next_title, r["device"], r["auto"], replacing=True, loopback=r["loopback"])
             except Exception as e:                       # 下一場開不起來也要先把這一場收好
                 next_error = e
         if _state["rec"] is r:
             _state["rec"] = None
     try:
-        r["proc"].communicate(b"q", timeout=10)          # 讓 ffmpeg 正常收尾
+        if r["loopback"]:                                # stdin 是聲音資料，不能送 q；停止混音、關掉 stdin，ffmpeg 讀到結尾就收尾
+            r["stop"].set()
+            r["capture"].join(timeout=5)
+            r["proc"].wait(timeout=10)
+        else:
+            r["proc"].communicate(b"q", timeout=10)      # 讓 ffmpeg 正常收尾
     except subprocess.TimeoutExpired:
         r["proc"].kill()
     r["log"].close()
