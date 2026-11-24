@@ -114,7 +114,7 @@ macOS／Linux 的 vibe-server 從同一個發行頁 `https://github.com/thewh1te
 
 1. `uv pip install --python .venv sherpa-onnx==1.13.7`
 2. 下載 https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_base_200k_sv_zh-cn_16k-common.onnx
-   到 `vendor/models/spk/`，SHA-256 `e2d2048292e055f7b61cdec3db010503f35369b245bf0b3bbad021c9a91e4053`。
+   到 `vendor/models/spk/`，SHA-256 `78d4730ad5a6dc1ed86914e2d76c796c6bfc6852f558dd1cbb9b16abd3c3f672`。
 
 ## 6. 檢查與啟動
 
