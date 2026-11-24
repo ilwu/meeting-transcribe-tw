@@ -69,6 +69,14 @@ ffmpeg 不在 PATH 上時，可以把 `ffmpeg`、`ffprobe` 放到 `vendor/ffmpeg
 
 下載網址、放的位置與 SHA-256 都在 [`docs/install.md`](docs/install.md)「選用元件」。各模型的授權請見其模型卡（whisper、VAD 為 MIT，Sortformer 為 CC-BY-4.0）。`vendor/` 已在 `.gitignore`。
 
+### 升級
+
+雙擊 `update.bat`（macOS／Linux 執行 `./update.sh`）。它會抓最新版的程式，套件清單有變就補裝，最後跑一次自我檢查。
+
+- 會議、詞彙表、聲紋資料庫、`.env` 都不在 git 裡，升級不會動到。
+- 要先關掉校對工具；正在錄音或轉錄時它不會升級，會告訴你在等什麼。
+- 升級完重新開 `start.bat` 就是新版。
+
 ## 快速開始
 
 ```bash
