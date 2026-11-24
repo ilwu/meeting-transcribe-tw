@@ -100,9 +100,20 @@ def save_db(db):
 
 
 def is_demo(mdir):
-    """是不是內附的示範會議（meeting.json 有 "demo": true）。"""
+    """是不是內附的示範會議。"""
+    mdir = Path(mdir)
+    #====================================
+    # 資料夾名稱和 demo/ 裡的示範會議相同
+    #====================================
+    # 不能只看 meeting.json 的記號：加上記號之前就複製進 meetings/ 的那些沒有記號
+    if (ROOT / "demo" / mdir.name / "project.json").exists():
+        return True
+
+    #====================================
+    # 或 meeting.json 有記號（使用者把資料夾改了名也認得）
+    #====================================
     try:
-        return bool(json.loads((Path(mdir) / "meeting.json").read_text(encoding="utf-8")).get("demo"))
+        return bool(json.loads((mdir / "meeting.json").read_text(encoding="utf-8")).get("demo"))
     except (OSError, ValueError):
         return False
 

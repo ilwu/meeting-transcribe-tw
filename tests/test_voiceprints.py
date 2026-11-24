@@ -157,6 +157,16 @@ def test_enroll_skips_the_demo_meeting(db, meeting):
     assert not learned and "示範會議" in warning
     assert "新同事" not in people()
 
+    #====================================
+    # 加上記號之前就複製出去的那些沒有記號：資料夾名稱和內附的示範會議相同也算
+    #====================================
+    old_copy = meeting.parent / next((vp.ROOT / "demo").glob("*/project.json")).parent.name
+    old_copy.mkdir()
+    (old_copy / "meeting.json").write_text('{"title": "產品週會（示範）"}', encoding="utf-8")
+    learned, warning = vp.enroll(old_copy, {}, "N", "新同事", prints(N=45))
+    assert not learned and "示範會議" in warning
+    assert "新同事" not in people()
+
 
 def test_enroll_ignores_voices_that_are_too_short(db, meeting):
     short = prints(A=30)
