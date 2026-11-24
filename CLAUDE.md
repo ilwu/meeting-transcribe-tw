@@ -113,11 +113,11 @@ source.* ─ffmpeg→ audio/16k.m4a ─(>28 分鐘切段)→ Gemini 加詞彙表
 
 ## 驗證方式
 
-- **自動測試**：`python -m pytest`（平常約 2 分鐘；測試大多在開 ffmpeg 與 git，這台電腦開程式變慢時會到 4 分鐘；要先 `pip install -r requirements-dev.txt`）。改了行為就補測試，修錯誤先寫一個會失敗的測試。新測試要確認它真的抓得到問題：把對應的程式暫時改壞，測試應該失敗。測試不碰真的會議資料、聲紋與詞彙表，也不呼叫模型；需要麥克風的錄音測試在沒有裝置的機器上會自動跳過，改錄音相關的程式要在有麥克風的電腦上跑。下面幾項是自動測試涵蓋不到、要手動做的。
+- **自動測試**：`python -m pytest`（約 1 到 2 分鐘；測試大多在開 ffmpeg 與 git，開程式慢的電腦會更久；要先 `pip install -r requirements-dev.txt`）。改了行為就補測試，修錯誤先寫一個會失敗的測試。新測試要確認它真的抓得到問題：把對應的程式暫時改壞，測試應該失敗。測試不碰真的會議資料、聲紋與詞彙表，也不呼叫模型；需要麥克風的錄音測試在沒有裝置的機器上會自動跳過，改錄音相關的程式要在有麥克風的電腦上跑。下面幾項是自動測試涵蓋不到、要手動做的。
 - **後端**：用 Flask test client（`app.app.test_client()`），並把 `transcribe_gemini.call` 換成假函式，不實際呼叫 API。POST 要帶 `json=`（沒有內容也帶 `json={}`），不是 JSON 會被 `only_own_page()` 擋成 403。測試專案放在臨時資料夾，測完刪除。
 - **重建**：先建到暫存資料夾，比對舊專案的 `text`、`status`、`llm_suggestion` 沒有遺失，講者名稱沒有換人。
 - **切段**：用 `ffmpeg -f lavfi -i anullsrc` 產生指定長度的靜音檔測邊界（剛好整除、尾段很短、尾段剛好 2 分鐘）。
-- **前端**：在另一個 port 起測試站（不要動使用者正在用的 5077），到瀏覽器實際操作；有時間競態的動作在同一段 JavaScript 內觸發。
+- **前端**：在另一個 port 起測試站（不要動使用者正在用的 5077；`python app.py` 固定用 5077，所以測試站要寫一支小腳本：import `app`、`recorder`、`voiceprints`，把 `app.ROOT`、`recorder.MEETINGS`、`voiceprints.DB` 指到暫存資料夾，再 `app.app.run(host="127.0.0.1", port=5078)`），到瀏覽器實際操作；有時間競態的動作在同一段 JavaScript 內觸發。
 - **錄音**：測試時把 `recorder.MEETINGS` 改到暫存資料夾、`SEGMENT_SEC` 改小，並停用 `recorder.transcribe`（避免拿測試錄音呼叫 Gemini）；當機情境用 `proc.kill()` 模擬。音效裝置可以換成假的（`tests/test_recorder_tracks.py` 的 `FakeDevice`，ffmpeg 仍是真的）；真的裝置在 `tests/test_recorder_audio.py`，從全新的行程、照網頁請求的執行緒情況開錄。
 - **AI 建議類功能**（找錯字、猜名字、會議紀錄）：先用假的 `correct_mod.suggest` 等函式測接受／全部接受／忽略／stale 與重建保留，再用真的模型跑一場確認品質；在 UI 測試用 `meetings/_ui_test` 這類暫存複本，測完刪除。
 - **CER 回歸**：`python pipeline/compare.py a=<稿1> b=<稿2>`，重構後數字要和重構前相同。
