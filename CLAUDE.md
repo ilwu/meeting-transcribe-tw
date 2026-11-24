@@ -107,7 +107,7 @@ source.* ─ffmpeg→ audio/16k.m4a ─(>28 分鐘切段)→ Gemini 加詞彙表
 - **Gemini 會「提前結束」**：回 STOP 但只轉了幾分鐘（例如 26 分鐘的音檔只轉了 1 分鐘）；`run.check()` 的涵蓋率檢查就是為此，別拿掉。也會隨機回 503，等 30 秒重試即可。
 - **會議資料夾裡的檔案要先核對**：可能放錯別場的影片或 `teams.vtt`。比對長度、md5、畫面內容後再處理。
 - **Teams 錄影可能有一段完全無聲**（-91 dB）：`run.speech_end()` 會略過結尾無聲；中段無聲要提醒使用者。
-- **測試別碰真資料**：UI 測試在另一個 port、用 `meetings/_xxx` 暫存複本，測完刪；會寫入 `voiceprints.json`、`glossary.txt` 的測試要先備份、測完還原。
+- **測試別碰真資料**：有真的會議、詞彙表、聲紋的資料夾不拿來測試。要在介面上操作時起測試站，資料位置整個導到暫存資料夾（做法見「驗證方式」的「前端」），不要在真的 `meetings/` 裡放測試用的複本。
 - **soundcard 每條執行緒都要初始化 COM**（`recorder._com()`）：soundcard 只在第一次 import 時替那條執行緒初始化，app.py 裡那條是早已結束的網頁請求執行緒，新執行緒一碰裝置就出 `0x800401f0`。測試腳本在主執行緒 import 會把問題蓋掉，要照 app.py 的樣子：先在一條短命執行緒裡 import，再到另一條執行緒開裝置。問裝置的名稱（`mic.name`）也算碰裝置，一樣要在 `_com()` 的範圍裡。
 - **Windows 的 Bash heredoc 會吃掉反斜線**：多行 Python 先寫成檔再跑。
 
@@ -119,7 +119,7 @@ source.* ─ffmpeg→ audio/16k.m4a ─(>28 分鐘切段)→ Gemini 加詞彙表
 - **切段**：用 `ffmpeg -f lavfi -i anullsrc` 產生指定長度的靜音檔測邊界（剛好整除、尾段很短、尾段剛好 2 分鐘）。
 - **前端**：在另一個 port 起測試站（不要動使用者正在用的 5077；`python app.py` 固定用 5077，所以測試站要寫一支小腳本：import `app`、`recorder`、`voiceprints`，把 `app.ROOT`、`recorder.MEETINGS`、`voiceprints.DB` 指到暫存資料夾，再 `app.app.run(host="127.0.0.1", port=5078)`），到瀏覽器實際操作；有時間競態的動作在同一段 JavaScript 內觸發。
 - **錄音**：測試時把 `recorder.MEETINGS` 改到暫存資料夾、`SEGMENT_SEC` 改小，並停用 `recorder.transcribe`（避免拿測試錄音呼叫 Gemini）；當機情境用 `proc.kill()` 模擬。音效裝置可以換成假的（`tests/test_recorder_tracks.py` 的 `FakeDevice`，ffmpeg 仍是真的）；真的裝置在 `tests/test_recorder_audio.py`，從全新的行程、照網頁請求的執行緒情況開錄。
-- **AI 建議類功能**（找錯字、猜名字、會議紀錄）：先用假的 `correct_mod.suggest` 等函式測接受／全部接受／忽略／stale 與重建保留，再用真的模型跑一場確認品質；在 UI 測試用 `meetings/_ui_test` 這類暫存複本，測完刪除。
+- **AI 建議類功能**（找錯字、猜名字、會議紀錄）：先用假的 `correct_mod.suggest` 等函式測接受／全部接受／忽略／stale 與重建保留，再用真的模型跑一場確認品質；要在介面上看結果時用測試站（見「前端」），把那場會議複製進它的暫存資料夾。
 - **CER 回歸**：`python pipeline/compare.py a=<稿1> b=<稿2>`，重構後數字要和重構前相同。
 
 ## 常用指令
