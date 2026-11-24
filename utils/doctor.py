@@ -144,9 +144,9 @@ def main():
     if WIN:
         try:
             importlib.import_module("soundcard")
-            add("選用", True, "錄音頁可以同時錄電腦播出的聲音（遠端會議）")
+            add("選用", True, "錄音頁可以錄音（麥克風與電腦播出的聲音）")
         except Exception:
-            add("選用", False, "沒有 soundcard：錄音頁不能錄電腦播出的聲音；uv pip install --python .venv -r requirements.txt")
+            add("選用", False, "沒有 soundcard：錄音頁不能錄音；uv pip install --python .venv -r requirements.txt")
 
     #====================================
     # 校對工具是否已在執行

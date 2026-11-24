@@ -22,10 +22,8 @@
       <label for="device" class="muted mb-1 block">麥克風</label>
       <select id="device" class="field py-2"></select>
     </div>
-    <div id="loopbackRow" class="hidden">
-      <label class="flex items-center gap-2"><input type="checkbox" id="loopback" class="accent-indigo-600"> 同時錄電腦播出的聲音（遠端會議）</label>
-      <div class="muted mt-1 pl-6">線上會議、用喇叭或耳機聽對方時要勾：筆電麥克風會把喇叭播出的聲音當成回音消掉，不勾就錄不到對方。電腦播出的所有聲音都會錄進去，開會時請關掉通知音與其他影音。</div>
-    </div>
+    <p class="muted">電腦播出的聲音（線上會議的對方、播放的影片）會一起錄，另外存成一軌；轉逐字稿時那一軌有聲音才會用到，現場會議不用管它。</p>
+    <div id="cant" class="hidden rounded-lg bg-orange-50 px-3 py-2.5 text-orange-800 ring-1 ring-orange-200">這台電腦不能錄音：需要 Windows 與 soundcard 套件（見 docs/install.md）。別處錄好的檔可以放進 meetings/ 的資料夾再轉逐字稿。</div>
     <div class="flex items-center gap-3">
       <label class="flex items-center gap-2"><input type="checkbox" id="auto" checked class="accent-indigo-600"> 錄完自動轉逐字稿</label>
       <button id="start" class="btn ml-auto bg-red-600 px-5 py-2 font-semibold text-white ring-red-600 hover:bg-red-500">● 開始錄音</button>
@@ -36,8 +34,9 @@
     <div class="flex items-center gap-2"><span class="size-3 animate-pulse rounded-full bg-red-500"></span><b id="curTitle"></b> <span id="curFolder" class="muted"></span></div>
     <div id="timer" class="text-5xl font-semibold tracking-wide tabular-nums">00:00:00</div>
     <div>
-      <div class="muted">音量 <span id="db">—</span><span id="lbdb"></span></div>
+      <div class="muted">麥克風 <span id="db">—</span></div>
       <div class="mt-1.5 h-3.5 overflow-hidden rounded-full bg-slate-200"><div id="bar" class="h-full w-0 bg-emerald-500 transition-[width]"></div></div>
+      <div id="lbdb" class="muted mt-1.5"></div>
     </div>
     <div id="silent" class="rounded-lg bg-orange-50 px-3 py-2.5 text-orange-800 ring-1 ring-orange-200" style="display:none"></div>
     <div id="dead" class="rounded-lg bg-red-50 px-3 py-2.5 text-red-800 ring-1 ring-red-200" style="display:none"></div>
@@ -98,18 +97,19 @@ function render(st){
   try { renderInner(st); } catch (e) { console.error(e); $('#items').innerHTML = `<li class="muted">清單顯示失敗：${esc(e.message)}（可能需要重開 app.py）</li>`; }
 }
 function renderInner(st){
-  $('#loopbackRow').classList.toggle('hidden', !st.loopback_available);
+  $('#cant').classList.toggle('hidden', st.can_record !== false);
   lastState = st;
   const r = st.recording;
   $('#idle').classList.toggle('hidden', !!r); $('#busy').classList.toggle('hidden', !r);
   if (r) {
-    $('#curTitle').textContent = r.title; $('#curFolder').textContent = r.folder + (r.loopback ? '（含電腦播出的聲音）' : '');
+    $('#curTitle').textContent = r.title; $('#curFolder').textContent = r.folder;
     $('#timer').textContent = hms(r.elapsed);
     const db = r.level_db;
     $('#db').textContent = db == null ? '—' : `${db} dB`;
-    // 電腦聲音太小代表會議軟體的聲音沒收進來（例如對方還沒講話，或沒有任何喇叭在播）
-    $('#lbdb').textContent = !r.loopback ? '' : r.loopback_db == null ? '　電腦聲音 —'
-      : `　電腦聲音 ${r.loopback_db > -60 ? '有收到' : '目前沒聲音'}（${r.loopback_db} dB）`;
+    // 電腦那一軌：現場會議本來就沒聲音，所以只顯示、不警告；線上會議時看這裡確認對方的聲音有收進來
+    $('#lbdb').textContent = r.loopback_db == null ? '電腦播出的聲音 —'
+      : `電腦播出的聲音：${r.loopback_db > -60 ? '有收到' : '目前沒聲音'}` + (r.loopback_sec ? `（這場累計 ${hms(r.loopback_sec)} 有聲音）` : '')
+        + (r.speakers === 0 && r.elapsed > 8 ? '　⚠ 找不到可以錄的喇叭' : '') + (r.notes ? '　' + r.notes.trim().split('\n').join('；') : '');
     $('#bar').style.width = db == null ? '0' : Math.max(0, Math.min(100, (db + 60) / 60 * 100)) + '%';
     const msg = levelAlert(db);
     $('#silent').textContent = msg; $('#silent').style.display = msg ? 'block' : 'none';
@@ -148,7 +148,7 @@ async function poll(){
 }
 $('#start').onclick = async () => {
   $('#start').disabled = true;
-  try { render(await api('/api/rec/start', {title: $('#title').value, device: $('#device').value, auto_transcribe: $('#auto').checked, loopback: $('#loopback').checked})); }
+  try { render(await api('/api/rec/start', {title: $('#title').value, device: $('#device').value, auto_transcribe: $('#auto').checked})); }
   catch (e) { alertBox(e.message); }
   $('#start').disabled = false;
 };

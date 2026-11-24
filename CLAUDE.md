@@ -33,7 +33,7 @@ source.* ─ffmpeg→ audio/16k.m4a ─(>28 分鐘切段)→ Gemini 加詞彙表
 
 | 檔案 | 職責 |
 |---|---|
-| `pipeline/run.py` | 一個指令跑完整流程；開頭 `import_raw()` 把直接丟進資料夾的原檔整理好（唯一的媒體檔 → `source.*`、`*.vtt` → `transcripts/teams.vtt`、補建 `meeting.json`）；每步產出已存在就跳過（`--force` 重跑），可中斷後重跑。影片來源會先抽關鍵畫面建畫面詞彙表、PDF 建資料詞彙表；結尾超過 1 分鐘的完全無聲不送轉錄 |
+| `pipeline/run.py` | 一個指令跑完整流程；開頭 `import_raw()` 把直接丟進資料夾的原檔整理好（唯一的媒體檔 → `source.*`、`*.vtt` → `transcripts/teams.vtt`、補建 `meeting.json`）；每步產出已存在就跳過（`--force` 重跑），可中斷後重跑。影片來源會先抽關鍵畫面建畫面詞彙表、PDF 建資料詞彙表；結尾超過 1 分鐘的完全無聲不送轉錄；錄音頁錄的雙聲道檔在 `prepare_audio()` 決定用不用電腦那一軌（`computer_audio()`：右聲道累計有聲音達 `COMPUTER_MIN_SEC` 才和麥克風混在一起，`--computer-audio on|off|auto` 可手動指定） |
 | `pipeline/transcribe_gemini.py` | Gemini generateContent 呼叫（`call`、`load_env`），也可單獨當 CLI 測試 |
 | `pipeline/gemini_transcribe.py` | Gemini 3.5 Transcribe 專用模型與 Files API 上傳（`upload_file`） |
 | `pipeline/transcribe_whisper.py` | 啟動 vibe-server、送 whisper 轉錄（講者分離 + VAD） |
@@ -45,7 +45,7 @@ source.* ─ffmpeg→ audio/16k.m4a ─(>28 分鐘切段)→ Gemini 加詞彙表
 | `pipeline/textutil.py` | 共用的文字正規化 `norm` 與 `cer` |
 | `pipeline/compare.py` | 多份逐字稿兩兩 CER（支援 txt、Teams vtt、whisper json） |
 | `app.py`、`static/index.html` | 校對工具（Flask + 單頁 HTML，三欄：會議清單／逐字稿／講者・AI 工具・會議紀錄），port 5077；每個請求先過 `only_own_page()`（Host 必須是本機；別的來源只能用連結開頁面；會改東西的請求必須來自自己的頁面而且是 JSON）；`/api/projects/overview` 給左欄（標題、日期、進度，依 mtime 快取）；`/api/project` 另附 `transcripts/screen_timeline.json`（不寫回 project.json），`/frame/<專案>/<檔名>` 提供截圖；`/api/search` 跨會議搜尋 `text`（依 project.json 的 mtime 快取） |
-| `recorder.py`、`static/record.html` | 錄音（`/record`）：ffmpeg dshow 錄麥克風；勾「同時錄電腦播出的聲音」時改由 `_capture_mix()` 用 soundcard 抓麥克風與**所有喇叭**的 WASAPI loopback（會議軟體可自己指定喇叭，不一定是 Windows 預設）、以麥克風為時鐘混成單聲道（每個喇叭一條 `_loopback_reader()` 頻繁讀取，沒有資料的時段補靜音；打不開的喇叭略過）；開錄前 `_probe_loopback()` 先試開，失敗不建資料夾，從 stdin 交給同一個 ffmpeg；每 `SEGMENT_SEC` 秒存一個 ADTS 小檔到 `<會議>/rec/`，結束時無損合併成 `source.m4a` 並刪掉小檔；當機留下的 `rec/` 由 `unfinished()` 偵測、`finalize()` 合併；`pending()` 列出有媒體檔但沒有 `project.json` 的會議供頁面一鍵轉錄；`transcribe()` 只是排進佇列，一次只跑一場 `run.py`（同時跑會搶同一顆內顯跑 whisper），排隊的狀態是「排隊中」、佇列不跨 app.py 重開；開始下一場前會等系統裡別處開的 `run.py`（app.py 重開前留下的、命令列開的）跑完；轉錄進度一律從各會議的 `run.log` 解析（app.py 重開後仍看得到） |
+| `recorder.py`、`static/record.html` | 錄音（`/record`）：只有一條錄音路徑。`_capture()` 用 soundcard 抓麥克風與**所有喇叭**播出的聲音（WASAPI loopback；會議軟體可自己指定喇叭，不一定是 Windows 預設），以麥克風為時鐘寫成雙聲道交給 ffmpeg 的 stdin：左聲道是麥克風、右聲道是電腦播出的聲音。`_SpeakerMix` 管喇叭那一軌：每個喇叭一條讀取執行緒，沒有資料的時段是靜音，打不開的喇叭記在 `capture.log` 後略過，每 `SPEAKER_SCAN_SEC` 秒重新找一次喇叭（錄音中途接上的也會錄）。開錄前 `_probe()` 先試開麥克風，失敗不建資料夾；`meeting.json` 的 `recording.channels` 記著這是兩軌的檔；每 `SEGMENT_SEC` 秒存一個 ADTS 小檔到 `<會議>/rec/`，結束時無損合併成 `source.m4a` 並刪掉小檔；當機留下的 `rec/` 由 `unfinished()` 偵測、`finalize()` 合併；`pending()` 列出有媒體檔但沒有 `project.json` 的會議供頁面一鍵轉錄；`transcribe()` 只是排進佇列，一次只跑一場 `run.py`（同時跑會搶同一顆內顯跑 whisper），排隊的狀態是「排隊中」、佇列不跨 app.py 重開；開始下一場前會等系統裡別處開的 `run.py`（app.py 重開前留下的、命令列開的）跑完；轉錄進度一律從各會議的 `run.log` 解析（app.py 重開後仍看得到） |
 | `static/tailwind.css` → `static/app.css` | 兩個頁面共用的樣式：Tailwind v4，`tailwind.css` 是來源（逐字稿行、按鈕等 JS 動態產生的元件定義成 class），編好的 `app.css` 進 git，使用者不用建置 |
 | `docs/install.md`、`utils/doctor.py`、`start.bat`／`start.sh` | 安裝：給 Claude Code 照做的安裝指南（固定下載網址與 SHA-256、要停下來問使用者的點）；自我檢查（必要／建議／選用，`--online` 驗金鑰，不印金鑰）；啟動捷徑（優先用 `.venv`，`app.py --open` 起來後開瀏覽器）。下載的網址、版本、檢查碼只寫在 `install.md` |
 | `update.bat`／`update.sh`、`utils/update.py` | 升級：校對工具開著、或別處有轉錄在跑就不升級（`busy()` 說出原因）；`git pull --ff-only`（使用者的資料都不在 git 裡，不會被動到）；`requirements.txt` 有變才補裝套件；最後跑自我檢查。`update.bat` 的內容包在一個括號區塊裡：cmd 會先把整個區塊讀進記憶體，`git pull` 換掉這個檔也不會執行到一半出錯 |
@@ -57,7 +57,7 @@ source.* ─ffmpeg→ audio/16k.m4a ─(>28 分鐘切段)→ Gemini 加詞彙表
 
 ## 資料模型與不變量（改程式前必讀）
 
-會議資料夾 `meetings/<YYYY-MM-DD>_<標題>/`（日期後面用 `-` 或 `_` 都可以，`import_raw()` 兩種都認）：`source.*`（原檔，不動）、`audio/`（可重建）、`transcripts/`（各引擎原始稿）、`meeting.json`（分段位移與說明；`silent_ranges` 是超過 1 分鐘的完全無聲時段、`silent_tail_from_sec` 是結尾無聲的起點，校對工具據此顯示警告）、`project.json`（校對狀態）、`glossary.txt`（本場詞彙，選用）。
+會議資料夾 `meetings/<YYYY-MM-DD>_<標題>/`（日期後面用 `-` 或 `_` 都可以，`import_raw()` 兩種都認）：`source.*`（原檔，不動）、`audio/`（可重建）、`transcripts/`（各引擎原始稿）、`meeting.json`（分段位移與說明；`silent_ranges` 是超過 1 分鐘的完全無聲時段、`silent_tail_from_sec` 是結尾無聲的起點，校對工具據此顯示警告；錄音頁錄的會議另有 `recording.channels`（`["mic", "computer"]`：`source.m4a` 的左、右聲道）、`recording.computer_audio`（轉錄時電腦那一軌有幾秒有聲音、有沒有用上）、`recording.use_computer`（手動指定用不用，沒有這一項就是自動））、`project.json`（校對狀態）、`glossary.txt`（本場詞彙，選用）。
 
 `project.json` 每行（segment）的欄位：
 
@@ -108,17 +108,17 @@ source.* ─ffmpeg→ audio/16k.m4a ─(>28 分鐘切段)→ Gemini 加詞彙表
 - **會議資料夾裡的檔案要先核對**：可能放錯別場的影片或 `teams.vtt`。比對長度、md5、畫面內容後再處理。
 - **Teams 錄影可能有一段完全無聲**（-91 dB）：`run.speech_end()` 會略過結尾無聲；中段無聲要提醒使用者。
 - **測試別碰真資料**：UI 測試在另一個 port、用 `meetings/_xxx` 暫存複本，測完刪；會寫入 `voiceprints.json`、`glossary.txt` 的測試要先備份、測完還原。
-- **soundcard 每條執行緒都要初始化 COM**（`recorder._com()`）：soundcard 只在第一次 import 時替那條執行緒初始化，app.py 裡那條是早已結束的網頁請求執行緒，新執行緒一碰裝置就出 `0x800401f0`。測試腳本在主執行緒 import 會把問題蓋掉，要照 app.py 的樣子：先在一條短命執行緒裡 import，再到另一條執行緒開裝置。
+- **soundcard 每條執行緒都要初始化 COM**（`recorder._com()`）：soundcard 只在第一次 import 時替那條執行緒初始化，app.py 裡那條是早已結束的網頁請求執行緒，新執行緒一碰裝置就出 `0x800401f0`。測試腳本在主執行緒 import 會把問題蓋掉，要照 app.py 的樣子：先在一條短命執行緒裡 import，再到另一條執行緒開裝置。問裝置的名稱（`mic.name`）也算碰裝置，一樣要在 `_com()` 的範圍裡。
 - **Windows 的 Bash heredoc 會吃掉反斜線**：多行 Python 先寫成檔再跑。
 
 ## 驗證方式
 
-- **自動測試**：`python -m pytest`（約 1 分鐘；要先 `pip install -r requirements-dev.txt`）。改了行為就補測試，修錯誤先寫一個會失敗的測試。新測試要確認它真的抓得到問題：把對應的程式暫時改壞，測試應該失敗。測試不碰真的會議資料、聲紋與詞彙表，也不呼叫模型；需要麥克風的錄音測試在沒有裝置的機器上會自動跳過，改錄音相關的程式要在有麥克風的電腦上跑。下面幾項是自動測試涵蓋不到、要手動做的。
+- **自動測試**：`python -m pytest`（約 1 分半；要先 `pip install -r requirements-dev.txt`）。改了行為就補測試，修錯誤先寫一個會失敗的測試。新測試要確認它真的抓得到問題：把對應的程式暫時改壞，測試應該失敗。測試不碰真的會議資料、聲紋與詞彙表，也不呼叫模型；需要麥克風的錄音測試在沒有裝置的機器上會自動跳過，改錄音相關的程式要在有麥克風的電腦上跑。下面幾項是自動測試涵蓋不到、要手動做的。
 - **後端**：用 Flask test client（`app.app.test_client()`），並把 `transcribe_gemini.call` 換成假函式，不實際呼叫 API。POST 要帶 `json=`（沒有內容也帶 `json={}`），不是 JSON 會被 `only_own_page()` 擋成 403。測試專案放在臨時資料夾，測完刪除。
 - **重建**：先建到暫存資料夾，比對舊專案的 `text`、`status`、`llm_suggestion` 沒有遺失，講者名稱沒有換人。
 - **切段**：用 `ffmpeg -f lavfi -i anullsrc` 產生指定長度的靜音檔測邊界（剛好整除、尾段很短、尾段剛好 2 分鐘）。
 - **前端**：在另一個 port 起測試站（不要動使用者正在用的 5077），到瀏覽器實際操作；有時間競態的動作在同一段 JavaScript 內觸發。
-- **錄音**：測試時把 `recorder.MEETINGS` 改到暫存資料夾、`SEGMENT_SEC` 改小，並停用 `recorder.transcribe`（避免拿測試錄音呼叫 Gemini）；當機情境用 `proc.kill()` 模擬。
+- **錄音**：測試時把 `recorder.MEETINGS` 改到暫存資料夾、`SEGMENT_SEC` 改小，並停用 `recorder.transcribe`（避免拿測試錄音呼叫 Gemini）；當機情境用 `proc.kill()` 模擬。音效裝置可以換成假的（`tests/test_recorder_tracks.py` 的 `FakeDevice`，ffmpeg 仍是真的）；真的裝置在 `tests/test_recorder_audio.py`，從全新的行程、照網頁請求的執行緒情況開錄。
 - **AI 建議類功能**（找錯字、猜名字、會議紀錄）：先用假的 `correct_mod.suggest` 等函式測接受／全部接受／忽略／stale 與重建保留，再用真的模型跑一場確認品質；在 UI 測試用 `meetings/_ui_test` 這類暫存複本，測完刪除。
 - **CER 回歸**：`python pipeline/compare.py a=<稿1> b=<稿2>`，重構後數字要和重構前相同。
 

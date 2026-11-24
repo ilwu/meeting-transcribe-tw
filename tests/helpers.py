@@ -59,3 +59,26 @@ def make_audio(path, *pieces, rate=16000):
                     f"{''.join(labels)}concat=n={len(pieces)}:v=0:a=1",
                     "-ac", "1", "-ar", str(rate), "-c:a", "aac", "-b:a", "32k", str(path)], check=True)
     return path
+
+
+def make_two_tracks(path, seconds, computer_sec):
+    """錄音頁錄出來的那種雙聲道檔，用同一組編碼參數：左聲道（麥克風）整段是 440 Hz，
+    右聲道（電腦播出的聲音）前 computer_sec 秒是 880 Hz、之後是數位靜音。"""
+    import recorder
+    expr = f"0.2*sin(2*PI*440*t)|0.2*sin(2*PI*880*t)*lt(t,{computer_sec})"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"aevalsrc='{expr}':s=48000:d={seconds}",
+                    *recorder.ENCODE, str(path)], check=True)
+    return path
+
+
+def tone_db(path, *freqs, channel=0):
+    """音檔某個聲道裡，各個頻率的成分有多強（dB）。振幅 0.2 的純音整段都在大約是 -14；完全沒有會在 -90 以下。
+    給一個頻率回傳一個數字，給好幾個回傳清單（只解碼一次：這台電腦每開一次 ffmpeg 要零點幾秒）。"""
+    import math
+    import numpy as np
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-af", f"pan=mono|c0=c{channel}", "-ar", "48000",
+                          "-f", "f32le", "-"], capture_output=True, check=True).stdout
+    x = np.frombuffer(raw, dtype="<f4")
+    t = np.arange(len(x)) / 48000
+    out = [20 * math.log10(2 * abs(np.mean(x * np.exp(-2j * np.pi * f * t))) + 1e-12) for f in freqs]
+    return out[0] if len(out) == 1 else out

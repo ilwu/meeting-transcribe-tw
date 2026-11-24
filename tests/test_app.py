@@ -45,7 +45,7 @@ def test_own_page_is_allowed(client, fake_recorder, label, method, url, base, kw
     ("同一台電腦別的埠上的網頁", "GET", "/api/projects/overview", ME,
      {"headers": {"Origin": "http://127.0.0.1:3000", "Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "cors"}}),
     ("別的網站送純文字開始錄音", "POST", "/api/rec/start", ME,
-     {"data": '{"title":"x","loopback":true}', "content_type": "text/plain",
+     {"data": '{"title":"x"}', "content_type": "text/plain",
       "headers": {"Origin": EVIL, "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors"}}),
     ("別的網站用表單結束錄音", "POST", "/api/rec/stop", ME,
      {"data": {"a": "b"}, "headers": {"Origin": EVIL, "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate"}}),
@@ -98,6 +98,21 @@ def test_overview_lists_newest_first_with_progress(client, data_root):
     assert by["2026-01-05_週會"]["silent"] == [[100, 400]]
     assert by["2026-01-02-舊會議"]["silent"] == [[60, 900]]                  # 舊資料只記了結尾無聲的起點
     assert by["experiment"]["title"] == "experiment" and by["experiment"]["silent"] == []
+
+
+def test_overview_tells_whether_computer_audio_was_used(client, data_root):
+    #====================================
+    # 準備：一場線上會議（電腦那一軌有用上）、一場不是錄音頁錄的
+    #====================================
+    used = {"active_sec": 95, "used": True, "by": "auto"}
+    write_meeting(data_root, "2026-01-02_線上", ["甲"], meta={"recording": {"channels": ["mic", "computer"], "computer_audio": used}})
+    write_meeting(data_root, "2026-01-01_別處來的", ["乙"])
+
+    #====================================
+    # 校對工具靠這一項顯示「電腦播出的聲音有沒有用在逐字稿」
+    #====================================
+    ov = {m["name"]: m["computer_audio"] for m in client.get("/api/projects/overview").get_json()}
+    assert ov == {"2026-01-02_線上": used, "2026-01-01_別處來的": None}
 
 
 def test_search_needs_all_terms_and_ignores_case(client, data_root):

@@ -36,6 +36,7 @@
           <h1 id="title" class="truncate text-lg font-semibold text-slate-900"></h1>
           <div id="meta" class="muted"></div>
           <div id="warn" class="mt-1 hidden text-xs text-amber-700"></div>
+          <div id="pcNote" class="mt-1 hidden text-xs text-slate-500"></div>
         </div>
         <div class="ml-auto h-1.5 w-40 shrink-0 rounded-full bg-slate-200"><div id="bar" class="h-full w-0 rounded-full bg-emerald-500"></div></div>
         <button id="export" class="btn btn-primary shrink-0" title="匯出校對版（選存檔位置；會議資料夾也會留一份 corrected.md）">匯出</button>
@@ -197,6 +198,11 @@ async function loadProject(n){
     + silent.map(([a, b]) => `${fmt(a)}～${fmt(b)}（${Math.round((b - a) / 60)} 分鐘）`).join('、')
     + '。常見原因是開錄的人把麥克風靜音，或電腦切換了音訊裝置。' : '';
   $('#warn').classList.toggle('hidden', !silent.length);
+  const ca = m.computer_audio;                       // 錄音頁錄的會議：電腦播出的那一軌有沒有聲音、有沒有用在逐字稿
+  $('#pcNote').textContent = !ca?.active_sec ? '' : ca.used
+    ? `電腦播出的聲音（線上會議的對方）有 ${fmt(ca.active_sec)}，已和麥克風混在一起轉錄。`
+    : `電腦播出的聲音有 ${fmt(ca.active_sec)}，沒有用在逐字稿（${ca.by === 'manual' ? '手動指定' : '太短'}）。`;
+  $('#pcNote').classList.toggle('hidden', !ca?.active_sec);
   focusId = null; renderNav(); renderSpeakers(); renderList(); updateStat(); scroller.scrollTop = 0;
   if (curTab === 'notes') openNotes();
 }

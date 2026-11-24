@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """一個指令跑完：原檔 →（影片抽畫面詞彙表、PDF 抽詞彙表）→ 16k 音訊 →（切段）→ Gemini 逐字稿 + whisper 對照 → 校對專案。
 用法: python pipeline/run.py meetings/<日期>_<標題> [--no-whisper] [--no-screen] [--force] [--model gemini-3.6-flash]
+      [--computer-audio on|off|auto]   錄音頁錄的檔：轉錄時用不用電腦播出的那一軌（預設 auto：有聲音才用）；改了要加 --force 重轉
 
 每一步的產出已存在就跳過（--force 全部重跑），所以中斷後重跑會接著做。
 完成後用 python app.py 開校對工具。
@@ -276,15 +277,69 @@ def whisper_input(mdir, audio, meta, force):
     return p
 
 
-def prepare_audio(mdir, force):
-    """source.* → audio/16k.m4a（16 kHz 單聲道 AAC 48 kbps）。"""
+def audio_channels(path):
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels", "-of", "csv=p=0", str(path)],
+                       capture_output=True, text=True, encoding="utf-8")
+    return int(r.stdout.strip() or 0)
+
+
+COMPUTER_MIN_SEC = 10        # 電腦那一軌累計有聲音超過這麼久才混進來：提示音這類零星的聲音不算
+
+
+def computer_audio(src, meta):
+    """錄音頁錄的檔是雙聲道：左是麥克風、右是電腦播出的聲音（線上會議的對方）。決定右聲道要不要混進來，
+    回傳要記進 meeting.json 的 {"active_sec", "used", "by"}；別處來的檔（Teams 錄影、舊的單聲道錄音）回傳 None。"""
+    #====================================
+    # 是不是錄音頁錄的雙聲道檔
+    #====================================
+    rec = meta.get("recording") or {}
+    if rec.get("channels") != ["mic", "computer"] or audio_channels(src) != 2:
+        return None
+
+    #====================================
+    # 右聲道累計有多少秒有聲音
+    #====================================
+    dur = ffprobe_duration(src)
+    r = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(src), "-af", "pan=mono|c0=c1,silencedetect=n=-60dB:d=0.5", "-f", "null", "-"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    starts = [float(x) for x in re.findall(r"silence_start: ([\d.]+)", r.stderr)]
+    ends = [float(x) for x in re.findall(r"silence_end: ([\d.]+)", r.stderr)]
+    ends += [dur] * (len(starts) - len(ends))            # 一直靜音到檔尾時，舊版 ffmpeg 不會印 silence_end
+    active = max(0.0, dur - sum(min(b, dur) - a for a, b in zip(starts, ends)))
+
+    #====================================
+    # 使用者指定的優先，否則看有聲音的時間夠不夠長
+    #====================================
+    choice = rec.get("use_computer")
+    manual = isinstance(choice, bool)
+    return {"active_sec": round(active), "used": choice if manual else active >= COMPUTER_MIN_SEC, "by": "manual" if manual else "auto"}
+
+
+def prepare_audio(mdir, meta, force):
+    """source.* → audio/16k.m4a（16 kHz 單聲道 AAC 48 kbps）。錄音頁錄的雙聲道檔在這裡決定用不用電腦那一軌，結果記進 meta。"""
     out = mdir / "audio/16k.m4a"
     if out.exists() and not force:
         return out
     src = source_file(mdir)
     out.parent.mkdir(exist_ok=True)
+
+    #====================================
+    # 決定怎麼變成單聲道
+    #====================================
+    ca = computer_audio(src, meta)
+    if ca is None:
+        mix = ["-ac", "1"]
+    else:
+        meta["recording"]["computer_audio"] = ca
+        mix = ["-af", "pan=mono|c0=c0+c1" if ca["used"] else "pan=mono|c0=c0"]
+        log(f"電腦播出的聲音有 {ca['active_sec'] // 60} 分 {ca['active_sec'] % 60} 秒："
+            + ("和麥克風混在一起轉錄" if ca["used"] else "不採用，只用麥克風") + ("（手動指定）" if ca["by"] == "manual" else ""))
+
+    #====================================
+    # 轉檔
+    #====================================
     log(f"轉檔 {src.name} → audio/16k.m4a")
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(src), "-vn", "-ac", "1", "-ar", "16000",
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(src), "-vn", *mix, "-ar", "16000",
                     "-c:a", "aac", "-b:a", "48k", str(out)], check=True)
     return out
 
@@ -458,7 +513,12 @@ def main():
     materials_glossary(mdir, key, force)
     gl = glossary(mdir)
 
-    audio = prepare_audio(mdir, force)
+    if "--computer-audio" in args:
+        choice = {"on": True, "off": False}.get(args[args.index("--computer-audio") + 1])
+        meta.setdefault("recording", {})["use_computer"] = choice
+    audio = prepare_audio(mdir, meta, force)
+    if meta_path.exists():                               # 用不用電腦那一軌要馬上記下來：後面的步驟失敗、重跑時這一步會被跳過
+        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     parts = split(mdir, audio, meta, force)
     if "silent_ranges" not in meta or force:
         meta["silent_ranges"] = silent_ranges(audio)

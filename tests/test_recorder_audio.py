@@ -16,10 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 def has_microphone():
     if sys.platform != "win32":
         return False
-    try:
-        return bool(recorder.list_devices())
-    except OSError:                                   # 沒有 ffmpeg
-        return False
+    return bool(recorder.list_devices())
 
 
 pytestmark = pytest.mark.skipif(not has_microphone(), reason="需要 Windows 與麥克風")
@@ -47,18 +44,19 @@ def test_microphone_recording_becomes_source_file(data_root, monkeypatch):
         time.sleep(0.25)
 
     #====================================
-    # 小檔合併成 source.m4a，並記下結束時間
+    # 小檔合併成雙聲道的 source.m4a，並記下結束時間
     #====================================
     assert recorder._state["finalizing"][folder.name].startswith("完成")
     assert run.ffprobe_duration(folder / "source.m4a") > 1
     assert not (folder / "rec").exists()
     meta = json.loads((folder / "meeting.json").read_text(encoding="utf-8"))
-    assert meta["status"] == "未處理" and meta["recording"]["ended"] and meta["recording"]["loopback"] is False
+    assert meta["status"] == "未處理" and meta["recording"]["ended"] and meta["recording"]["channels"] == ["mic", "computer"]
+    assert run.audio_channels(folder / "source.m4a") == 2
 
 
 # 照校對工具實際的情況開錄：音效套件先在一條很快就結束的執行緒裡載入（像網頁請求），再從另一條執行緒開始錄。
 # 要用全新的行程才重現得出來：測試行程的主執行緒一旦載入過音效套件，其他執行緒就借得到它的初始化。
-LOOPBACK_SCENARIO = """
+REQUEST_THREAD_SCENARIO = """
 import json, sys, threading, time
 from pathlib import Path
 root, tmp = Path(sys.argv[1]), Path(sys.argv[2])
@@ -72,15 +70,15 @@ def in_thread(f):
 out = {}
 def start():
     try:
-        recorder.start("loopback", loopback=True)
+        recorder.start("從請求執行緒開錄")
     except Exception as e:
         out["start_error"] = str(e)
 
-in_thread(recorder.loopback_available)
+in_thread(recorder.available)
 in_thread(start)
 time.sleep(2.5)
 st = recorder.status()["recording"] or {}
-out.update(alive=st.get("alive"), error=st.get("error"), loopback_db=st.get("loopback_db"))
+out.update(alive=st.get("alive"), error=st.get("error"), level_db=st.get("level_db"), loopback_db=st.get("loopback_db"), speakers=st.get("speakers"))
 if "start_error" not in out:
     in_thread(recorder.stop)
 for _ in range(80):
@@ -92,14 +90,15 @@ print(json.dumps(out, ensure_ascii=False))
 """
 
 
-def test_recording_computer_audio_works_from_request_threads(tmp_path):
+def test_recording_works_from_request_threads(tmp_path):
     pytest.importorskip("soundcard")
-    r = subprocess.run([sys.executable, "-X", "utf8", "-c", LOOPBACK_SCENARIO, str(ROOT), str(tmp_path)],
+    r = subprocess.run([sys.executable, "-X", "utf8", "-c", REQUEST_THREAD_SCENARIO, str(ROOT), str(tmp_path)],
                        capture_output=True, text=True, encoding="utf-8", timeout=120)
     assert r.returncode == 0, r.stderr[-800:]
     out = json.loads(r.stdout.strip().splitlines()[-1])
     assert "start_error" not in out, out
     assert out["alive"] is True and out["error"] is None, out
-    assert out["loopback_db"] is not None                      # 錄音頁靠這個顯示電腦聲音有沒有收到
+    assert out["level_db"] is not None and out["loopback_db"] is not None      # 錄音頁靠這兩個顯示兩軌的音量
+    assert out["speakers"] >= 1                                # 這台電腦的喇叭有被找到、打得開
     assert out["finalizing"] and out["finalizing"][0].startswith("完成"), out
     assert run.ffprobe_duration(next(tmp_path.iterdir()) / "source.m4a") > 1

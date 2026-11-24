@@ -159,6 +159,7 @@ def projects_overview():
                             "silent": meta.get("silent_ranges") if "silent_ranges" in meta else (
                                 [[meta["silent_tail_from_sec"], meta.get("source", {}).get("duration_sec")]]
                                 if meta.get("silent_tail_from_sec") else []),
+                            "computer_audio": (meta.get("recording") or {}).get("computer_audio"),
                             "done": sum(1 for s in p["segments"] if s["status"] != "pending"),
                             "total": len(p["segments"])})
             _overview_cache[d] = cached
@@ -284,8 +285,7 @@ def rec_status():
 @app.post("/api/rec/start")
 def rec_start():
     b = request.get_json()
-    return _rec_call(recorder.start, b.get("title", ""), b.get("device"), b.get("auto_transcribe", False),
-                     b.get("loopback", False))
+    return _rec_call(recorder.start, b.get("title", ""), b.get("device"), b.get("auto_transcribe", False))
 
 
 @app.post("/api/rec/stop")
