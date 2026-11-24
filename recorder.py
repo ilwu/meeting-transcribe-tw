@@ -99,6 +99,17 @@ def _safe_title(title):
     return t or "會議"
 
 
+def _without_today(title, today=None):
+    """標題開頭又打了今天的日期就拿掉：資料夾名稱與會議清單本來就有日期，再打一次只是變成 2026-10-21_2026-10-21-週會。
+    只拿掉今天的日期：打別的日期（例如補錄前一天的會）是有意義的，留著。"""
+    today = today or datetime.now()
+    t = title.strip()
+    m = re.match(r"(\d{4})\s*[-/._年]?\s*(\d{1,2})\s*[-/._月]?\s*(\d{1,2})(?!\d)\s*日?[\s\-_/.:：、，,]*", t)
+    if m and tuple(map(int, m.groups())) == (today.year, today.month, today.day):
+        return t[m.end():]
+    return t
+
+
 def _new_folder(title):
     base = f"{datetime.now():%Y-%m-%d}_{_safe_title(title)}"
     d, n = MEETINGS / base, 2
@@ -129,8 +140,9 @@ def _start_locked(title, device, auto_transcribe, replacing=False):
     #====================================
     # 建資料夾與 meeting.json
     #====================================
+    title = _without_today(title)
     d = _new_folder(title)
-    meta = {"title": title.strip() or "會議", "date": f"{datetime.now():%Y-%m-%d}",
+    meta = {"title": title or "會議", "date": f"{datetime.now():%Y-%m-%d}",
             "source": {"file": "source.m4a", "note": f"recorder.py 錄音：左聲道是麥克風（{device}），右聲道是電腦播出的聲音"},
             "recording": {"started": datetime.now().isoformat(timespec="seconds"), "device": device, "channels": CHANNELS},
             "participants": [], "transcripts": {}, "status": "錄音中",

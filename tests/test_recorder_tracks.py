@@ -229,6 +229,47 @@ def test_computer_that_cannot_record_says_so(devices, data_root, monkeypatch):
 
 
 #------------------------------------------------------------------------
+# 標題開頭又打了日期
+#------------------------------------------------------------------------
+@pytest.mark.parametrize("typed, kept", [
+    ("2026-10-21-週會", "週會"),
+    ("2026/10/21 週會", "週會"),
+    ("2026.10.21_週會", "週會"),
+    ("20261021週會", "週會"),
+    ("2026年10月21日　週會", "週會"),
+    ("2026-10-21", ""),                                  # 只打了日期：標題是空的，會用預設的「會議」
+    ("  週會  ", "週會"),
+    ("2026-10-20 補錄昨天的會", "2026-10-20 補錄昨天的會"),   # 不是今天：是有意義的日期，留著
+    ("2026 年度計畫", "2026 年度計畫"),
+    ("20261021號機台", "號機台"),
+    ("202610215 號訂單", "202610215 號訂單"),            # 後面還有數字：不是日期
+    ("週會 2026-10-21", "週會 2026-10-21"),              # 日期不在開頭：不動
+])
+def test_todays_date_at_the_start_of_the_title_is_dropped(typed, kept):
+    from datetime import datetime
+    assert recorder._without_today(typed, datetime(2026, 10, 21)) == kept
+
+
+def test_folder_name_does_not_repeat_the_date(devices, data_root):
+    from datetime import datetime
+    today = f"{datetime.now():%Y-%m-%d}"
+
+    #====================================
+    # 標題自己又打了今天的日期
+    #====================================
+    st = recorder.start(f"{today}-週會")
+    folder = data_root / "meetings" / st["recording"]["folder"]
+    recorder.stop()
+    assert wait_saved(folder).startswith("完成")
+
+    #====================================
+    # 資料夾與標題都只有一個日期
+    #====================================
+    assert folder.name == f"{today}_週會" and st["recording"]["title"] == "週會"
+    assert json.loads((folder / "meeting.json").read_text(encoding="utf-8"))["title"] == "週會"
+
+
+#------------------------------------------------------------------------
 # 把各個喇叭的聲音湊成一軌（不開裝置，直接餵資料）
 #------------------------------------------------------------------------
 @pytest.fixture
