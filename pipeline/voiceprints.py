@@ -99,9 +99,24 @@ def save_db(db):
     DB.write_text(json.dumps(db, ensure_ascii=False), encoding="utf-8")
 
 
+def is_demo(mdir):
+    """是不是內附的示範會議（meeting.json 有 "demo": true）。"""
+    try:
+        return bool(json.loads((Path(mdir) / "meeting.json").read_text(encoding="utf-8")).get("demo"))
+    except (OSError, ValueError):
+        return False
+
+
 def enroll(mdir, p, label, name, prints=None):
     """把這場這位講者的聲紋記到 name 底下（同一場同一標籤先前記在別人名下的會移掉，因為使用者改了名）。
     回傳 (是否有學到, 警告)；聲音明顯更像另一個已知的人時不學，警告說明像誰。"""
+    #====================================
+    # 示範會議不學
+    #====================================
+    # 它的聲音是語音合成的；學進去的話，之後真的同名的人會被合成的樣本帶歪
+    if is_demo(mdir):
+        return False, "示範會議的聲音是語音合成的，不會學進聲紋資料庫"
+
     #====================================
     # 算聲紋，太短不學
     #====================================

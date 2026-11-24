@@ -33,7 +33,7 @@ source.* ─ffmpeg→ audio/16k.m4a ─(>28 分鐘切段)→ Gemini 加詞彙表
 
 | 檔案 | 職責 |
 |---|---|
-| `pipeline/run.py` | 一個指令跑完整流程；開頭 `import_raw()` 把直接丟進資料夾的原檔整理好（唯一的媒體檔 → `source.*`、`*.vtt` → `transcripts/teams.vtt`、補建 `meeting.json`）；每步產出已存在就跳過（`--force` 重跑），可中斷後重跑。影片來源會先抽關鍵畫面建畫面詞彙表、PDF 建資料詞彙表；結尾超過 1 分鐘的完全無聲不送轉錄；錄音頁錄的雙聲道檔在 `prepare_audio()` 決定用不用電腦那一軌（`computer_audio()`：右聲道累計有聲音達 `COMPUTER_MIN_SEC` 才和麥克風混在一起，`--computer-audio on|off|auto` 可手動指定） |
+| `pipeline/run.py` | 一個指令跑完整流程；開頭 `import_raw()` 把直接丟進資料夾的原檔整理好（唯一的媒體檔 → `source.*`、`*.vtt` → `transcripts/teams.vtt`、補建 `meeting.json`）；每步產出已存在就跳過（`--force` 重跑），可中斷後重跑。影片來源會先抽關鍵畫面建畫面詞彙表、PDF 建資料詞彙表；結尾超過 1 分鐘的完全無聲不送轉錄；錄音頁錄的雙聲道檔在 `prepare_audio()` 決定用不用電腦那一軌（`computer_audio()`：右聲道累計有聲音達 `COMPUTER_MIN_SEC` 才和麥克風混在一起，`--computer-audio on|off|auto` 可手動指定，要和 `--force` 一起用）；`--force` 重轉時已經切好的各段會照原來的位移從新的音檔重切（`recut()`） |
 | `pipeline/transcribe_gemini.py` | Gemini generateContent 呼叫（`call`、`load_env`），也可單獨當 CLI 測試 |
 | `pipeline/gemini_transcribe.py` | Gemini 3.5 Transcribe 專用模型與 Files API 上傳（`upload_file`） |
 | `pipeline/transcribe_whisper.py` | 啟動 vibe-server、送 whisper 轉錄（講者分離 + VAD） |
@@ -44,12 +44,12 @@ source.* ─ffmpeg→ audio/16k.m4a ─(>28 分鐘切段)→ Gemini 加詞彙表
 | `pipeline/voiceprints.py` | 聲紋（sherpa-onnx + ERes2Net，`vendor/models/spk/`）：`speaker_prints()` 每個講者的聲紋與一致性 `purity`（剔除不像的段落）；`enroll()` 取名時學，聲音明顯更像另一個已知的人就不學、回傳警告（存成 `speakers[標籤].voice_warning`）；`match()`／`apply_match()` 很像的自動帶入、次像的列為名字建議，每位講者只考慮自己最像的人、一人一場只自動帶入一位（兩位都最像同一人時列「合併」建議 `merge_into`），不跟同一場比；`reject()`「不是他」。門檻見程式常數與 `docs/design.md`；資料庫 `voiceprints.json` 在根目錄（不進 git） |
 | `pipeline/textutil.py` | 共用的文字正規化 `norm` 與 `cer` |
 | `pipeline/compare.py` | 多份逐字稿兩兩 CER（支援 txt、Teams vtt、whisper json） |
-| `app.py`、`static/index.html` | 校對工具（Flask + 單頁 HTML，三欄：會議清單／逐字稿／講者・AI 工具・會議紀錄），port 5077；每個請求先過 `only_own_page()`（Host 必須是本機；別的來源只能用連結開頁面；會改東西的請求必須來自自己的頁面而且是 JSON）；`/api/projects/overview` 給左欄（標題、日期、進度，依 mtime 快取）；`/api/project` 另附 `transcripts/screen_timeline.json`（不寫回 project.json），`/frame/<專案>/<檔名>` 提供截圖；`/api/search` 跨會議搜尋 `text`（依 project.json 的 mtime 快取） |
+| `app.py`、`static/index.html` | 校對工具（Flask + 單頁 HTML，三欄：會議清單／逐字稿／講者・AI 工具・會議紀錄），port 5077；每個請求先過 `only_own_page()`（Host 必須是本機；別的來源只能用連結整頁開啟，不能放進框裡；會改東西的請求必須來自自己的頁面而且是 JSON），回應一律帶 `X-Frame-Options` 與 `frame-ancestors 'none'`；`/api/projects/overview` 給左欄（標題、日期、進度，依 mtime 快取）；`/api/project` 另附 `transcripts/screen_timeline.json`（不寫回 project.json），`/frame/<專案>/<檔名>` 提供截圖；`/api/search` 跨會議搜尋 `text`（依 project.json 的 mtime 快取） |
 | `recorder.py`、`static/record.html` | 錄音（`/record`）：只有一條錄音路徑。`_capture()` 用 soundcard 抓麥克風與**所有喇叭**播出的聲音（WASAPI loopback；會議軟體可自己指定喇叭，不一定是 Windows 預設），以麥克風為時鐘寫成雙聲道交給 ffmpeg 的 stdin：左聲道是麥克風、右聲道是電腦播出的聲音。`_SpeakerMix` 管喇叭那一軌：每個喇叭一條讀取執行緒，沒有資料的時段是靜音，打不開的喇叭記在 `capture.log` 後略過，每 `SPEAKER_SCAN_SEC` 秒重新找一次喇叭（錄音中途接上的也會錄）。開錄前 `_probe()` 先試開麥克風，失敗不建資料夾；`meeting.json` 的 `recording.channels` 記著這是兩軌的檔；每 `SEGMENT_SEC` 秒存一個 ADTS 小檔到 `<會議>/rec/`，結束時無損合併成 `source.m4a` 並刪掉小檔；當機留下的 `rec/` 由 `unfinished()` 偵測、`finalize()` 合併；`pending()` 列出有媒體檔但沒有 `project.json` 的會議供頁面一鍵轉錄；`transcribe()` 只是排進佇列，一次只跑一場 `run.py`（同時跑會搶同一顆內顯跑 whisper），排隊的狀態是「排隊中」、佇列不跨 app.py 重開；開始下一場前會等系統裡別處開的 `run.py`（app.py 重開前留下的、命令列開的）跑完；轉錄進度一律從各會議的 `run.log` 解析（app.py 重開後仍看得到） |
 | `static/tailwind.css` → `static/app.css` | 兩個頁面共用的樣式：Tailwind v4，`tailwind.css` 是來源（逐字稿行、按鈕等 JS 動態產生的元件定義成 class），編好的 `app.css` 進 git，使用者不用建置 |
 | `docs/install.md`、`utils/doctor.py`、`start.bat`／`start.sh` | 安裝：給 Claude Code 照做的安裝指南（固定下載網址與 SHA-256、要停下來問使用者的點）；自我檢查（必要／建議／選用，`--online` 驗金鑰，不印金鑰）；啟動捷徑（優先用 `.venv`，`app.py --open` 起來後開瀏覽器）。下載的網址、版本、檢查碼只寫在 `install.md` |
-| `update.bat`／`update.sh`、`utils/update.py` | 升級：校對工具開著、或別處有轉錄在跑就不升級（`busy()` 說出原因）；`git pull --ff-only`（使用者的資料都不在 git 裡，不會被動到）；`requirements.txt` 有變才補裝套件；最後跑自我檢查。`update.bat` 的內容包在一個括號區塊裡：cmd 會先把整個區塊讀進記憶體，`git pull` 換掉這個檔也不會執行到一半出錯 |
-| `demo/`、`utils/make_demo_audio.py` | 內附的示範會議（語音合成、內容虛構；來源與授權見 `demo/README.md`）：`劇本.txt` 由 `make_demo_audio.py` 用 Gemini 語音合成成 `source.m4a`，其餘是正式流程的產出。`app.seed_meetings()` 在還沒有 `meetings/` 時（全新安裝第一次啟動）把它複製進去，只做一次。README 的截圖（`docs/images/`）拍的就是這一場 |
+| `update.bat`／`update.sh`、`utils/update.py` | 升級：校對工具開著、或別處有轉錄在跑就不升級（`busy()` 說出原因）；`git pull --ff-only`（使用者的資料都不在 git 裡，不會被動到）；有 `.venv` 時每次都把套件對一次（上次補裝失敗的這裡補得回來）；最後跑自我檢查。問本機的校對工具不走 proxy。`update.bat` 的內容包在一個括號區塊裡：cmd 會先把整個區塊讀進記憶體，`git pull` 換掉這個檔也不會執行到一半出錯 |
+| `demo/`、`utils/make_demo_audio.py` | 內附的示範會議（語音合成、內容虛構；來源與授權見 `demo/README.md`）：`劇本.txt` 由 `make_demo_audio.py` 用 Gemini 語音合成成 `source.m4a`，其餘是正式流程的產出。`app.seed_meetings()` 在啟動（`python app.py`，不是 import）而且還沒有 `meetings/` 時把它複製進去，只做一次；先複製到 `meetings.tmp/` 再整包改名，中途被打斷下次會重來。它的 `meeting.json` 有 `"demo": true`，聲紋不會學它的合成聲音。README 的截圖（`docs/images/`）拍的就是這一場 |
 | `pipeline/bundled.py` | `use_bundled_ffmpeg()`：有 `vendor/ffmpeg/bin` 就放到 PATH 最前面；`app.py`、`run.py`、`voiceprints.py` 的入口會呼叫 |
 | `tests/`、`.github/workflows/tests.yml` | 自動測試（pytest）：`conftest.py` 把資料位置導到暫存資料夾，`helpers.py` 做假會議與合成音檔；模型一律用假函式。GitHub Actions 在 Windows 上照 `docs/install.md` 的步驟裝環境後跑同一套測試 |
 | `utils/` | 其他與主流程無關的小工具 |
@@ -57,7 +57,7 @@ source.* ─ffmpeg→ audio/16k.m4a ─(>28 分鐘切段)→ Gemini 加詞彙表
 
 ## 資料模型與不變量（改程式前必讀）
 
-會議資料夾 `meetings/<YYYY-MM-DD>_<標題>/`（日期後面用 `-` 或 `_` 都可以，`import_raw()` 兩種都認）：`source.*`（原檔，不動）、`audio/`（可重建）、`transcripts/`（各引擎原始稿）、`meeting.json`（分段位移與說明；`silent_ranges` 是超過 1 分鐘的完全無聲時段、`silent_tail_from_sec` 是結尾無聲的起點，校對工具據此顯示警告；錄音頁錄的會議另有 `recording.channels`（`["mic", "computer"]`：`source.m4a` 的左、右聲道）、`recording.computer_audio`（轉錄時電腦那一軌有幾秒有聲音、有沒有用上）、`recording.use_computer`（手動指定用不用，沒有這一項就是自動））、`project.json`（校對狀態）、`glossary.txt`（本場詞彙，選用）。
+會議資料夾 `meetings/<YYYY-MM-DD>_<標題>/`（日期後面用 `-` 或 `_` 都可以，`import_raw()` 兩種都認）：`source.*`（原檔，不動）、`audio/`（可重建）、`transcripts/`（各引擎原始稿）、`meeting.json`（分段位移與說明；`silent_ranges` 是超過 1 分鐘的完全無聲時段、`silent_tail_from_sec` 是結尾無聲的起點，校對工具據此顯示警告；錄音頁錄的會議另有 `recording.channels`（`["mic", "computer"]`：`source.m4a` 的左、右聲道）、`recording.computer_audio`（轉錄時電腦那一軌有幾秒有聲音、有沒有用上）、`recording.use_computer`（手動指定用不用，沒有這一項就是自動）；內附的示範會議有 `demo: true`）、`project.json`（校對狀態）、`glossary.txt`（本場詞彙，選用）。
 
 `project.json` 每行（segment）的欄位：
 

@@ -152,7 +152,8 @@ def main():
     # 校對工具是否已在執行
     #====================================
     try:                                                 # 只看埠有沒有人聽會誤判成別的程式，要確認回應的是這個工具
-        with urllib.request.urlopen("http://127.0.0.1:5077/api/projects/overview", timeout=3) as r:
+        local = urllib.request.build_opener(urllib.request.ProxyHandler({}))     # 問本機不走 proxy（127.0.0.1 不在 Python 的預設例外裡）
+        with local.open("http://127.0.0.1:5077/api/projects/overview", timeout=3) as r:
             running = isinstance(json.load(r), list)
     except (OSError, ValueError):
         running = False

@@ -144,6 +144,20 @@ def test_enroll_learns_a_normal_voice(db, meeting):
     assert learned and "新同事" in people()
 
 
+def test_enroll_skips_the_demo_meeting(db, meeting):
+    #====================================
+    # 準備：這場是內附的示範會議
+    #====================================
+    (meeting / "meeting.json").write_text('{"title": "產品週會（示範）", "demo": true}', encoding="utf-8")
+
+    #====================================
+    # 它的聲音是語音合成的，取了名也不學
+    #====================================
+    learned, warning = vp.enroll(meeting, {}, "N", "新同事", prints(N=45))
+    assert not learned and "示範會議" in warning
+    assert "新同事" not in people()
+
+
 def test_enroll_ignores_voices_that_are_too_short(db, meeting):
     short = prints(A=30)
     short["A"]["secs"] = 3

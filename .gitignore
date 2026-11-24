@@ -17,6 +17,7 @@ __pycache__/
 
 # 會議資料與實驗輸出（含會議內容，不上 GitHub；本機保留）
 meetings/
+meetings.tmp/
 research/outputs/
 # 含人名或會議內容（本機保留，不上 GitHub）
 glossary.txt

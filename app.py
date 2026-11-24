@@ -34,12 +34,23 @@ def seed_meetings(meetings, demo):
     只在資料夾還不存在時做：使用者之後把示範會議刪掉，不會再跑回來。"""
     if meetings.exists():
         return
-    meetings.mkdir(parents=True)
+
+    #====================================
+    # 先在旁邊的暫存資料夾備好
+    #====================================
+    # 複製到一半被中斷（當機、被關掉）時 meetings/ 還不存在，下次啟動會重來，不會留下殘缺的示範會議
+    staging = meetings.with_name(meetings.name + ".tmp")
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True)
     for project in sorted(demo.glob("*/project.json")):
-        shutil.copytree(project.parent, meetings / project.parent.name)
+        shutil.copytree(project.parent, staging / project.parent.name)
+
+    #====================================
+    # 整包換成正式的名字
+    #====================================
+    staging.rename(meetings)
 
 
-seed_meetings(recorder.MEETINGS, ROOT / "demo")
 # 校對專案：每個資料夾一個 project.json，專案名稱即資料夾名
 PROJECT_GLOBS = ["meetings/*/project.json", "research/projects/*/project.json"]
 app = Flask(__name__, static_folder=str(ROOT / "static"), static_url_path="/static")
@@ -69,7 +80,10 @@ def only_own_page():
     # 讀取：別的網站只能用連結開頁面，不能讀資料或把錄音嵌進去
     #====================================
     if request.method in ("GET", "HEAD"):
-        if foreign and request.headers.get("Sec-Fetch-Mode") != "navigate":
+        # 連過來只能是整頁開啟，不能放進框（iframe）裡：框裡的頁面算這個工具自己的來源，別的網站把它疊成透明的，
+        # 騙使用者點一下就能開始錄音
+        whole_page = request.headers.get("Sec-Fetch-Mode") == "navigate" and request.headers.get("Sec-Fetch-Dest") in (None, "document")
+        if foreign and not whole_page:
             abort(403)
         return
 
@@ -83,8 +97,10 @@ def only_own_page():
 
 @app.after_request
 def same_origin_only(resp):
-    # 請瀏覽器自己也擋掉別的網站嵌入這裡的資源（沒有 Sec-Fetch 標頭的舊瀏覽器靠這個）
+    # 請瀏覽器自己也擋：別的網站不能嵌入這裡的資源，也不能把這裡的頁面放進框裡（沒有 Sec-Fetch 標頭的舊瀏覽器靠這些）
     resp.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
     return resp
 
 
@@ -664,6 +680,8 @@ def prepass(name):
 
 
 if __name__ == "__main__":
+    # 放在這裡而不是檔案最外層：只是 import（例如跑測試）不該在真的資料位置建資料夾
+    seed_meetings(recorder.MEETINGS, ROOT / "demo")
     if "--open" in sys.argv:                         # 啟動捷徑用：伺服器起來後再開瀏覽器，免得先看到連不上
         import webbrowser
         threading.Timer(1.5, lambda: webbrowser.open("http://127.0.0.1:5077/")).start()

@@ -1,10 +1,11 @@
 """轉錄流程裡不需要模型的部分：整理原始檔、無聲偵測、切段、檢查模型的回應。音檔用 ffmpeg 合成。"""
 import json
+import subprocess
 
 import pytest
 
 import run
-from helpers import make_audio, make_long_tone, needs_ffmpeg
+from helpers import make_audio, make_long_tone, needs_ffmpeg, tone_db
 
 MIN = 60
 
@@ -175,3 +176,66 @@ def test_split_reuses_recorded_offsets(tmp_path):
     meta = {"parts": [{"file": "audio/part1.m4a", "offset_sec": 0}, {"file": "audio/part2.m4a", "offset_sec": 1543.25}]}
     assert run.split(tmp_path, tmp_path / "audio" / "16k.m4a", meta, False) == [
         (tmp_path / "audio/part1.m4a", 0), (tmp_path / "audio/part2.m4a", 1543.25)]
+
+
+@needs_ffmpeg
+def test_forced_rerun_recuts_the_parts_from_the_new_audio(tmp_path, monkeypatch):
+    #====================================
+    # 準備：一場切成三段的會議，第一次轉錄時聲音是 440 Hz
+    #====================================
+    monkeypatch.setattr(run, "CHUNK", CH)
+    monkeypatch.setattr(run, "SINGLE_MAX", CH + 20)
+    (tmp_path / "audio").mkdir()
+    audio = make_long_tone(tmp_path / "audio" / "16k.m4a", 2 * CH + 145)
+    parts = run.split(tmp_path, audio, {}, False)
+    meta = {"parts": [{"file": p.relative_to(tmp_path).as_posix(), "offset_sec": off} for p, off in parts]}
+    assert len(parts) == 3 and tone_db(parts[1][0], 440, seconds=2) > -30
+
+    #====================================
+    # 音檔換了內容（例如改成把電腦那一軌混進來），這裡用 880 Hz 代表
+    #====================================
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"sine=frequency=880:sample_rate=16000:duration={2 * CH + 145}",
+                    "-ac", "1", "-c:a", "aac", "-b:a", "32k", str(audio)], check=True)
+
+    #====================================
+    # 一般的重跑：沿用已經切好的段，不重切
+    #====================================
+    assert run.split(tmp_path, audio, meta, False) == parts
+    assert tone_db(parts[1][0], 880, seconds=2) < -60
+
+    #====================================
+    # 強制重轉：每一段都換成新的聲音，位移不變、各段仍然首尾相接
+    #====================================
+    assert run.split(tmp_path, audio, meta, True) == parts
+    assert all(tone_db(p, 880, seconds=2) > -30 for p, _ in parts)
+    lengths = [run.ffprobe_duration(p) for p, _ in parts]
+    assert abs(sum(lengths) - run.ffprobe_duration(audio)) < 1
+    for (_, off), (_, nxt), length in zip(parts, parts[1:], lengths):
+        assert abs(off + length - nxt) < 0.5
+
+
+def test_computer_audio_option_must_be_valid_and_come_with_force():
+    #====================================
+    # 正確的用法：記下使用者的指定
+    #====================================
+    for value, want in (("on", True), ("off", False), ("auto", None)):
+        meta = {"recording": {"use_computer": "舊的"}}
+        run.set_computer_choice(["會議", "--computer-audio", value, "--force"], meta, True)
+        assert meta["recording"]["use_computer"] is want
+
+    #====================================
+    # 沒給這個參數：什麼都不動
+    #====================================
+    meta = {}
+    run.set_computer_choice(["會議", "--force"], meta, True)
+    assert meta == {}
+
+    #====================================
+    # 打錯字、漏了值、忘了 --force：說明後結束，什麼都不記
+    #====================================
+    for args, force in ((["會議", "--computer-audio", "ON", "--force"], True), (["會議", "--force", "--computer-audio"], True),
+                        (["會議", "--computer-audio", "off"], False)):
+        meta = {}
+        with pytest.raises(SystemExit) as e:
+            run.set_computer_choice(args, meta, force)
+        assert meta == {} and "--computer-audio" in str(e.value)

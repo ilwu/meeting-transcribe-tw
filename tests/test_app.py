@@ -28,6 +28,8 @@ def fake_recorder(monkeypatch):
     ("自己的頁面讀清單", "GET", "/api/projects/overview", ME, {"headers": SAME}),
     ("命令列工具（沒有瀏覽器標頭）", "GET", "/api/projects/overview", ME, {}),
     ("從別的網站點連結過來", "GET", "/record", ME, {"headers": {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate"}}),
+    ("從別的網站點連結過來（瀏覽器註明是整頁開啟）", "GET", "/record", ME,
+     {"headers": {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"}}),
     ("自己的頁面開始錄音", "POST", "/api/rec/start", ME, {"json": {"title": "x"}, "headers": {**SAME, "Origin": ME}}),
     ("沒有內容但有 JSON 標頭", "POST", "/api/rec/stop", ME, {"headers": {**SAME, "Origin": ME, "Content-Type": "application/json"}}),
     ("用 localhost 開的頁面", "POST", "/api/rec/stop", "http://localhost:5077", {"json": {}, "headers": {**SAME, "Origin": "http://localhost:5077"}}),
@@ -39,6 +41,8 @@ def test_own_page_is_allowed(client, fake_recorder, label, method, url, base, kw
 
 @pytest.mark.parametrize("label, method, url, base, kw", [
     ("外面的網域指到本機", "GET", "/api/projects/overview", "http://evil.example:5077", {}),
+    ("別的網站把錄音頁放進框裡", "GET", "/record", ME,
+     {"headers": {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "iframe"}}),
     ("別的網站用 fetch 讀清單", "GET", "/api/projects/overview", ME,
      {"headers": {"Origin": EVIL, "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "cors"}}),
     ("別的網站把錄音嵌進去", "GET", "/audio/x", ME, {"headers": {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors"}}),
@@ -60,6 +64,18 @@ def test_other_origins_are_blocked(client, fake_recorder, label, method, url, ba
 #------------------------------------------------------------------------
 # 會議清單與搜尋
 #------------------------------------------------------------------------
+
+def test_pages_ask_the_browser_not_to_put_them_in_a_frame(client, fake_recorder):
+    #====================================
+    # 打 API
+    #====================================
+    r = client.get("/record")
+
+    #====================================
+    # 新的瀏覽器看 Content-Security-Policy，舊的看 X-Frame-Options，兩個都帶
+    #====================================
+    assert r.headers["X-Frame-Options"] == "DENY" and "frame-ancestors 'none'" in r.headers["Content-Security-Policy"]
+
 
 def test_status_works_before_any_meeting_exists(client, data_root, monkeypatch):
     # 全新安裝還沒有 meetings/：狀態 API 壞掉的話，「處理中」區塊和會議清單的自動更新都會不見

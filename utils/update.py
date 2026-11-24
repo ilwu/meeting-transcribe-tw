@@ -5,17 +5,21 @@
 用法: python utils/update.py        Windows 可以雙擊 update.bat；macOS／Linux 執行 ./update.sh
 結束碼：升級完成（或本來就是最新版）而且自我檢查的必要項目都通過為 0，否則為 1。
 """
+import http.client
 import json
 import shutil
 import socket
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PORT = 5077
 WIN = sys.platform == "win32"
+# 問本機的校對工具不走 proxy：電腦設了 proxy、例外清單又沒列 127.0.0.1 時，Python 會把這個請求也送去 proxy
+LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def git(root, *args):
@@ -41,9 +45,13 @@ def busy(port=PORT):
         listening = False
     if listening:
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/rec/status", timeout=10) as r:
+            with LOCAL.open(f"http://127.0.0.1:{port}/api/rec/status", timeout=10) as r:
                 st = json.load(r)
-        except (OSError, ValueError) as e:
+        except urllib.error.HTTPError as e:
+            if e.code >= 500:                            # 有程式在、但狀態讀不到：可能就是校對工具自己出錯了，寧可不升級
+                return f"{port} 埠上的程式有回應、但讀不到狀態（HTTP {e.code}）：校對工具如果還開著，先關掉再升級。"
+            st = None                                    # 404 之類：佔用這個埠的是別的網頁程式
+        except (OSError, ValueError, http.client.HTTPException) as e:
             if isinstance(e, TimeoutError) or isinstance(getattr(e, "reason", None), TimeoutError):
                 return "校對工具沒有回應（可能正在忙）：等它忙完、關掉之後再升級。"
             st = None                                    # 回應不是這個工具的格式：佔用這個埠的是別的程式
@@ -51,7 +59,8 @@ def busy(port=PORT):
             doing = []
             if st.get("recording"):
                 doing.append("正在錄音")
-            if st.get("finalizing"):
+            # 合併完的項目會留在清單上給錄音頁顯示（「完成…」「失敗…」），不算還在合併
+            if any(not str(v).startswith(("完成", "失敗")) for v in (st.get("finalizing") or {}).values()):
                 doing.append("正在合併錄音")
             jobs = [v for v in st["transcribing"].values() if v.get("state") in ("進行中", "排隊中")]
             if jobs:
@@ -73,36 +82,53 @@ def changed(root, old, new, path):
 
 
 def venv_python(root):
+    #====================================
+    # 專案自己的 Python 在哪
+    #====================================
     p = root / ".venv" / ("Scripts/python.exe" if WIN else "bin/python")
+
+    #====================================
+    # 沒有 .venv 就是用電腦原有的 Python
+    #====================================
     return p if p.exists() else None
 
 
 def find_uv():
     """uv 剛裝好時還不在 PATH 上，所以也看它預設的安裝位置。"""
+    #====================================
+    # PATH 上有就用
+    #====================================
     exe = shutil.which("uv")
     if exe:
         return exe
+
+    #====================================
+    # 不然看預設的安裝位置
+    #====================================
     p = Path.home() / ".local/bin" / ("uv.exe" if WIN else "uv")
     return str(p) if p.exists() else None
 
 
 def install_packages(root):
-    """照 requirements.txt 補裝套件，裝好回傳 True。"""
-    py, uv = venv_python(root), find_uv()
-    if py and uv:
+    """照 requirements.txt 把 .venv 的套件補齊（已經齊全時不到一秒），裝好回傳 True。"""
+    uv = find_uv()
+    if uv:
         cmd = [uv, "pip", "install", "--python", ".venv", "-r", "requirements.txt"]
-    elif py:
-        cmd = [str(py), "-m", "pip", "install", "-r", "requirements.txt"]   # uv 建的 .venv 裡沒有 pip；這條路給 python -m venv 建的環境
     else:
-        # 沒有 .venv：套件裝在電腦原有的 Python 裡，不替使用者決定要不要動它
-        print("  請自己補裝：pip install -r requirements.txt")
-        return False
+        cmd = [str(venv_python(root)), "-m", "pip", "install", "-r", "requirements.txt"]   # uv 建的 .venv 裡沒有 pip；這條路給 python -m venv 建的環境
     return subprocess.run(cmd, cwd=root).returncode == 0
 
 
 def run_doctor(root):
     """跑自我檢查（結果直接顯示給使用者），回傳必要項目是否全部通過。"""
+    #====================================
+    # 用專案自己的 Python（沒有 .venv 就用現在這個）
+    #====================================
     py = venv_python(root) or sys.executable
+
+    #====================================
+    # 結束碼 0 才是必要項目全過
+    #====================================
     return subprocess.run([str(py), str(root / "utils" / "doctor.py")], cwd=root).returncode == 0
 
 
@@ -143,14 +169,19 @@ def main(root=ROOT):
             print("  - " + line)
 
     #====================================
-    # 套件清單有變才重裝
+    # 補齊套件
     #====================================
     installed = True
-    if new != old and changed(root, old, new, "requirements.txt"):
-        print("套件清單有更新，補裝套件…", flush=True)
+    if venv_python(root):
+        # 每次都對一次，不只在套件清單有變的時候：上次補裝失敗（當時沒網路）、或先自己 git pull 過，這裡才補得回來
+        print("確認套件…", flush=True)
         installed = install_packages(root)
         if not installed:
-            print("  套件沒有裝好：下面的自我檢查會列出缺哪些。")
+            print("  套件沒有裝好（可能是連不到網路）：再執行一次升級會重試。")
+    elif new != old and changed(root, old, new, "requirements.txt"):
+        # 沒有 .venv：套件裝在電腦原有的 Python 裡，不替使用者決定要不要動它
+        print("套件清單有更新，請自己補裝：pip install -r requirements.txt")
+        installed = False
 
     #====================================
     # 自我檢查

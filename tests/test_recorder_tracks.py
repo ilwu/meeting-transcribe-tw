@@ -173,12 +173,46 @@ def test_a_speaker_that_cannot_be_opened_does_not_stop_the_recording(devices, da
     assert mic > HEARD and pc > HEARD
 
 
+def test_warning_goes_away_when_the_speaker_works_again(devices, data_root, monkeypatch):
+    _, speakers = devices
+    monkeypatch.setattr(recorder, "SPEAKER_RETRY_SEC", 0.5)
+    speakers[0][2].broken = "裝置使用中"                 # 開錄時唯一的喇叭被別的程式佔住
+
+    #====================================
+    # 一開始錄不到：錄音頁有提示
+    #====================================
+    st = recorder.start("暫時錄不到")
+    folder = data_root / "meetings" / st["recording"]["folder"]
+    time.sleep(1.0)
+    before = recorder.status()["recording"]
+    assert "假喇叭" in before["notes"] and before["speakers"] == 0
+
+    #====================================
+    # 佔用的程式放開了：自動重試、開始錄到，提示消失
+    #====================================
+    speakers[0][2].broken = None
+    time.sleep(2.5)
+    after = recorder.status()["recording"]
+    recorder.stop()
+    assert wait_saved(folder).startswith("完成")
+    assert after["notes"] == "" and after["speakers"] == 1 and after["loopback_sec"] >= 1
+
+
 def test_meeting_without_any_computer_audio_still_records_the_microphone(devices, data_root):
+    #====================================
+    # 準備：這台電腦一個喇叭都沒有
+    #====================================
     _, speakers = devices
     speakers.clear()
 
+    #====================================
+    # 錄音
+    #====================================
     folder, during = record(data_root, 2.5)
 
+    #====================================
+    # 麥克風照錄；檔案還是兩軌，右聲道是靜音，轉錄時不會用它
+    #====================================
     assert during["alive"] and during["speakers"] == 0 and during["loopback_sec"] == 0
     src = folder / "source.m4a"
     assert run.audio_channels(src) == 2                  # 還是兩軌，右聲道是靜音：轉錄時就不會用它
@@ -211,17 +245,29 @@ def test_ending_one_meeting_can_start_the_next(devices, data_root):
 # 開不了錄的情況
 #------------------------------------------------------------------------
 def test_broken_microphone_is_reported_before_anything_is_created(devices, data_root):
+    #====================================
+    # 準備：麥克風打不開
+    #====================================
     mic, _ = devices
     mic.broken = "找不到裝置"
 
+    #====================================
+    # 開錄：說清楚原因，不留下空的會議資料夾
+    #====================================
     with pytest.raises(RuntimeError, match="打不開麥克風.*找不到裝置"):
         recorder.start("開不了")
     assert list((data_root / "meetings").iterdir()) == [] and recorder.status()["recording"] is None
 
 
 def test_computer_that_cannot_record_says_so(devices, data_root, monkeypatch):
+    #====================================
+    # 準備：這台電腦不能錄音（不是 Windows，或沒有 soundcard）
+    #====================================
     monkeypatch.setattr(recorder, "available", lambda: False)
 
+    #====================================
+    # 錄音頁知道不能錄；硬要開錄會說明原因
+    #====================================
     assert recorder.status()["can_record"] is False and recorder.list_devices() == []
     with pytest.raises(RuntimeError, match="不能錄音"):
         recorder.start("不能錄")
@@ -284,11 +330,17 @@ def mix(tmp_path):
 
 
 def test_mix_adds_speakers_and_fills_gaps_with_silence(mix):
+    #====================================
+    # 準備：兩個喇叭各播了 0.3 秒
+    #====================================
     m, feed = mix
     n = recorder.MIX_BLOCK
     feed("a", np.full(n * 3, 0.25))
     feed("b", np.full(n * 3, 0.5))
 
+    #====================================
+    # 取四次，每次 0.1 秒
+    #====================================
     assert np.allclose(m.take(n), 0.75)                  # 兩個喇叭同時在播：加總
     assert np.allclose(m.take(n), 0.75)
     assert np.allclose(m.take(n), 0.75)

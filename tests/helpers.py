@@ -71,12 +71,14 @@ def make_two_tracks(path, seconds, computer_sec):
     return path
 
 
-def tone_db(path, *freqs, channel=0):
+def tone_db(path, *freqs, channel=0, seconds=None):
     """音檔某個聲道裡，各個頻率的成分有多強（dB）。振幅 0.2 的純音整段都在大約是 -14；完全沒有會在 -90 以下。
-    給一個頻率回傳一個數字，給好幾個回傳清單（只解碼一次：這台電腦每開一次 ffmpeg 要零點幾秒）。"""
+    給一個頻率回傳一個數字，給好幾個回傳清單（只解碼一次：這台電腦每開一次 ffmpeg 要零點幾秒）。
+    seconds 是只看開頭幾秒：用很多小段接起來的長音檔，各段的相位接不上，整段一起量會互相抵消。"""
     import math
     import numpy as np
-    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-af", f"pan=mono|c0=c{channel}", "-ar", "48000",
+    raw = subprocess.run(["ffmpeg", "-v", "error", *(["-t", str(seconds)] if seconds else []), "-i", str(path),
+                          "-af", f"pan=mono|c0=c{channel}", "-ar", "48000",
                           "-f", "f32le", "-"], capture_output=True, check=True).stdout
     x = np.frombuffer(raw, dtype="<f4")
     t = np.arange(len(x)) / 48000

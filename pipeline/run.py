@@ -278,9 +278,38 @@ def whisper_input(mdir, audio, meta, force):
 
 
 def audio_channels(path):
+    #====================================
+    # 問 ffprobe
+    #====================================
     r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels", "-of", "csv=p=0", str(path)],
                        capture_output=True, text=True, encoding="utf-8")
+
+    #====================================
+    # 沒有聲音軌時輸出是空的
+    #====================================
     return int(r.stdout.strip() or 0)
+
+
+def set_computer_choice(args, meta, force):
+    """命令列的 --computer-audio on|off|auto：把使用者指定的記進 meta。打錯、或沒有一起加 --force，就說明後結束，什麼都不記。"""
+    if "--computer-audio" not in args:
+        return
+
+    #====================================
+    # 檢查
+    #====================================
+    i = args.index("--computer-audio")
+    value = args[i + 1] if i + 1 < len(args) else ""
+    if value not in ("on", "off", "auto"):
+        sys.exit("--computer-audio 後面要接 on（一定用）、off（不用）或 auto（自動判斷）")
+    # 不加 --force 的話每一步都會被跳過、逐字稿不變，選擇卻已經記下來，要到下次重轉才突然生效
+    if not force:
+        sys.exit("--computer-audio 要和 --force 一起用：換了聲音來源，逐字稿要整個重轉（會再呼叫 Gemini）")
+
+    #====================================
+    # 記下來
+    #====================================
+    meta.setdefault("recording", {})["use_computer"] = {"on": True, "off": False}.get(value)
 
 
 COMPUTER_MIN_SEC = 10        # 電腦那一軌累計有聲音超過這麼久才混進來：提示音這類零星的聲音不算
@@ -345,9 +374,12 @@ def prepare_audio(mdir, meta, force):
 
 
 def split(mdir, audio, meta, force):
-    """回傳 [(音檔, 位移秒數)]。meeting.json 已有 parts 就沿用，以免位移改變導致校對專案對不上。"""
+    """回傳 [(音檔, 位移秒數)]。meeting.json 已有 parts 就沿用原來的位移，以免位移改變導致校對專案對不上。"""
     if meta.get("parts"):
-        return [(mdir / p["file"], p["offset_sec"]) for p in meta["parts"]]
+        parts = [(mdir / p["file"], p["offset_sec"]) for p in meta["parts"]]
+        if force:
+            recut(audio, parts, meta)
+        return parts
     dur, full = speech_end(audio)
     if dur < full:
         log(f"結尾 {full - dur:.0f} 秒完全無聲，只轉錄前 {dur:.0f} 秒")
@@ -369,6 +401,28 @@ def split(mdir, audio, meta, force):
             break
         off, i = cut, i + 1
     return parts
+
+
+def recut(audio, parts, meta):
+    """重轉（--force）時 16k.m4a 可能換了內容（例如改了用不用電腦那一軌）：各段照原來的位移從新的音檔重切，
+    不然 Gemini 轉的還是舊的聲音。位移不變，校對專案裡的修改才對得回去。"""
+    #====================================
+    # 新的音檔有聲音到哪裡
+    #====================================
+    dur, full = speech_end(audio)
+    if dur < full:
+        meta["silent_tail_from_sec"] = round(dur)
+    else:
+        meta.pop("silent_tail_from_sec", None)
+
+    #====================================
+    # 照原來的位移重切
+    #====================================
+    for i, (p, off) in enumerate(parts):
+        end = parts[i + 1][1] if i + 1 < len(parts) else max(dur, off + 1)
+        log(f"重切 {p.name}：{off}s 起 {end - off:.0f}s")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", str(off), "-t", f"{end - off:.3f}", "-i", str(audio),
+                        "-c", "copy", str(p)], check=True)
 
 
 def quietest_point(audio, center, radius=10, win=0.5):
@@ -507,15 +561,13 @@ def main():
     import_raw(mdir)
     meta_path = mdir / "meeting.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    set_computer_choice(args, meta, force)
     (mdir / "transcripts").mkdir(exist_ok=True)
     if "--no-screen" not in args:
         screen_analysis(mdir, key, force)
     materials_glossary(mdir, key, force)
     gl = glossary(mdir)
 
-    if "--computer-audio" in args:
-        choice = {"on": True, "off": False}.get(args[args.index("--computer-audio") + 1])
-        meta.setdefault("recording", {})["use_computer"] = choice
     audio = prepare_audio(mdir, meta, force)
     if meta_path.exists():                               # 用不用電腦那一軌要馬上記下來：後面的步驟失敗、重跑時這一步會被跳過
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")

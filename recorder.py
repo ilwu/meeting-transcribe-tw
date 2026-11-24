@@ -72,6 +72,10 @@ def list_devices():
     """麥克風的名稱，Windows 的預設裝置排第一個。"""
     if not available():
         return []
+
+    #====================================
+    # 問 Windows 有哪些麥克風
+    #====================================
     try:
         with _com():
             import soundcard as sc
@@ -79,6 +83,10 @@ def list_devices():
             first = sc.default_microphone().name if names else None
     except Exception:                                    # 一個錄音裝置都沒有時 soundcard 會丟錯
         return []
+
+    #====================================
+    # 預設的排最前面
+    #====================================
     return sorted(dict.fromkeys(names), key=lambda n: n != first)
 
 
@@ -102,9 +110,16 @@ def _safe_title(title):
 def _without_today(title, today=None):
     """標題開頭又打了今天的日期就拿掉：資料夾名稱與會議清單本來就有日期，再打一次只是變成 2026-10-21_2026-10-21-週會。
     只拿掉今天的日期：打別的日期（例如補錄前一天的會）是有意義的，留著。"""
+    #====================================
+    # 開頭像不像日期
+    #====================================
     today = today or datetime.now()
     t = title.strip()
     m = re.match(r"(\d{4})\s*[-/._年]?\s*(\d{1,2})\s*[-/._月]?\s*(\d{1,2})(?!\d)\s*日?[\s\-_/.:：、，,]*", t)
+
+    #====================================
+    # 是今天才拿掉
+    #====================================
     if m and tuple(map(int, m.groups())) == (today.year, today.month, today.day):
         return t[m.end():]
     return t
@@ -162,7 +177,7 @@ def _start_locked(title, device, auto_transcribe, replacing=False):
     # 開始抓聲音
     #====================================
     stop_evt = threading.Event()
-    meter = {"mic_db": None, "loopback_db": None, "loopback_sec": 0.0, "speakers": 0}
+    meter = {"mic_db": None, "loopback_db": None, "loopback_sec": 0.0, "speakers": 0, "notes": ""}
     th = threading.Thread(target=_capture, args=(proc, device, stop_evt, d / "rec" / "capture.log", meter), daemon=True)
     th.start()
     _state["rec"] = {"proc": proc, "dir": d, "title": meta["title"], "device": device, "t0": time.time(),
@@ -203,7 +218,8 @@ class _SpeakerMix:
         self.stop, self.log_path = stop, log_path
         self.lock = threading.Lock()
         self.streams = {}                                # 喇叭 id → {"new": 剛讀到的, "pending": 還沒取走的, "primed": 已經開始取}
-        self.failed = {}                                 # 喇叭 id → 上次打不開的時間
+        self.failed = {}                                 # 喇叭 id → {"at": 上次打不開的時間, "why": 給使用者看的原因}；恢復了就拿掉
+        self.scan_error = ""                             # 找喇叭這件事本身出的錯
         self.logged = set()
 
     def log(self, msg):
@@ -213,6 +229,11 @@ class _SpeakerMix:
         with open(self.log_path, "a", encoding="utf-8") as f:
             f.write(msg + "\n")
 
+    def problems(self):
+        """現在還錄不到的喇叭（給錄音頁看）。只講現在的狀態：一開始打不開、後來恢復的不再提。"""
+        with self.lock:
+            return "；".join(filter(None, [self.scan_error, *(f["why"] for f in self.failed.values())]))
+
     def watch(self):
         """（自己一條執行緒）每隔幾秒找一次喇叭，還沒在錄的就開始錄。錄音中途才出現的喇叭也要錄：
         接上螢幕或耳機之後，會議軟體可能改從新的裝置出聲。"""
@@ -220,13 +241,13 @@ class _SpeakerMix:
         with _com():
             while True:
                 try:
-                    found = _list_speakers()
+                    found, self.scan_error = _list_speakers(), ""
                 except Exception as e:
-                    found = []
-                    self.log(f"找不到喇叭：{type(e).__name__}: {e}")
+                    found, self.scan_error = [], f"找不到喇叭：{type(e).__name__}: {e}"
+                    self.log(self.scan_error)
                 for sid, name, lb in found:
                     with self.lock:
-                        if sid in self.streams or time.time() - self.failed.get(sid, 0) < SPEAKER_RETRY_SEC:
+                        if sid in self.streams or time.time() - self.failed.get(sid, {"at": 0})["at"] < SPEAKER_RETRY_SEC:
                             continue
                         self.streams[sid] = {"new": deque(), "pending": np.zeros(0, dtype=np.float32), "primed": False}
                     threading.Thread(target=self.read, args=(sid, name, lb), daemon=True).start()
@@ -238,6 +259,8 @@ class _SpeakerMix:
         new = self.streams[sid]["new"]
         try:
             with _com(), lb.recorder(samplerate=SAMPLE_RATE, blocksize=BUFFER) as r:
+                with self.lock:
+                    self.failed.pop(sid, None)           # 打得開了：之前錄不到的提示可以收掉
                 while not self.stop.is_set():
                     x = r.record(numframes=None)         # 一次只給一小包，要一直讀才讀得完
                     if len(x):
@@ -246,10 +269,11 @@ class _SpeakerMix:
                     else:
                         time.sleep(0.005)
         except Exception as e:
-            self.log(f"錄不到喇叭「{name}」播出的聲音：{type(e).__name__}: {e}")
+            why = f"錄不到喇叭「{name}」播出的聲音：{type(e).__name__}: {e}"
+            self.log(why)
             with self.lock:
                 self.streams.pop(sid, None)
-                self.failed[sid] = time.time()
+                self.failed[sid] = {"at": time.time(), "why": why}
 
     def take(self, n):
         """取出接下來 n 個樣本（所有喇叭加總）。沒有聲音在播的時候 Windows 不送資料，缺的就是靜音。"""
@@ -276,7 +300,14 @@ class _SpeakerMix:
 
 def _db(x):
     import numpy as np
+    #====================================
+    # 這一段的平均音量
+    #====================================
     rms = float(np.sqrt(np.mean(np.square(x, dtype=np.float64)))) if len(x) else 0.0
+
+    #====================================
+    # 換成 dB；完全沒聲音時取不了對數，給一個很小的值
+    #====================================
     return round(20 * math.log10(rms), 1) if rms > 1e-6 else -120.0
 
 
@@ -304,6 +335,7 @@ def _capture(proc, device, stop, log_path, meter):
                 m = mr.record(numframes=MIX_BLOCK)[:, 0].astype(np.float32)
                 pc = np.clip(speakers.take(len(m)), -1, 1)
                 meter["mic_db"], meter["loopback_db"], meter["speakers"] = _db(m), _db(pc), len(speakers.streams)
+                meter["notes"] = speakers.problems()
                 if meter["loopback_db"] > SOUND_DB:
                     meter["loopback_sec"] += len(m) / SAMPLE_RATE
                 proc.stdin.write(np.column_stack([m, pc]).astype("<f4").tobytes())
@@ -325,14 +357,16 @@ def status():
     rec = None
     if r:
         alive, m = r["proc"].poll() is None, r["meter"]
-        notes = "".join(f.read_text(encoding="utf-8", errors="replace") for f in (r["dir"] / "rec" / n for n in ("capture.log", "ffmpeg.log"))
-                        if f.exists())[-300:]
         rec = {"title": r["title"], "folder": r["dir"].name, "device": r["device"], "alive": alive,
                "elapsed": round(time.time() - r["t0"]), "level_db": m["mic_db"],
                "loopback_db": m["loopback_db"], "loopback_sec": round(m["loopback_sec"]), "speakers": m["speakers"],
                "segments": len(list((r["dir"] / "rec").glob("part*.aac")))}
-        # 還在錄的時候，紀錄檔裡是「哪個喇叭錄不到」這類不影響錄音的事；停了才是停下來的原因
-        rec["notes" if alive else "error"] = notes
+        # 還在錄：現在錄不到哪個喇叭（不影響錄音）；停了：紀錄檔的結尾是停下來的原因
+        if alive:
+            rec["notes"] = m["notes"]
+        else:
+            rec["error"] = "".join(f.read_text(encoding="utf-8", errors="replace") for f in (r["dir"] / "rec" / n for n in ("capture.log", "ffmpeg.log"))
+                                   if f.exists())[-300:]
     transcribing = {k: _transcribe_state(v) for k, v in _all_jobs().items()}
     return {"recording": rec, "finalizing": dict(_state["finalizing"]), "transcribing": transcribing,
             "unfinished": [d.parent.name for d in unfinished()], "pending": pending(transcribing),

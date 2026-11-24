@@ -32,6 +32,7 @@ def test_demo_meeting_is_complete():
     assert (MEETING / p["audio"]).stat().st_size > 100_000 and (MEETING / "source.m4a").exists()
     meta = json.loads((MEETING / "meeting.json").read_text(encoding="utf-8"))
     assert "示範" in meta["title"] and meta["source"]["duration_sec"] > 60
+    assert meta["demo"] is True                                              # 聲紋靠這個記號不學示範會議的合成聲音
     assert (MEETING / "glossary.txt").read_text(encoding="utf-8").strip()      # 重聽、重新轉錄都會帶這場的詞彙表
 
     #====================================
@@ -65,25 +66,77 @@ def test_nothing_in_demo_is_ignored_by_git():
 
 
 def test_script_only_uses_speakers_that_have_a_voice():
+    #====================================
+    # 讀劇本
+    #====================================
     sys.path.insert(0, str(ROOT / "utils"))
     import make_demo_audio
     lines = make_demo_audio.read_script(make_demo_audio.SCRIPT)
+
+    #====================================
+    # 每位講者都有指定的聲音
+    #====================================
     assert len(lines) > 5 and {who for who, _ in lines} == set(make_demo_audio.VOICES)
 
 
 def test_first_start_gets_the_demo_meeting_once(tmp_path):
     meetings = tmp_path / "meetings"
 
+    #====================================
+    # 第一次啟動：放進示範會議，沒有留下暫存資料夾
+    #====================================
     app.seed_meetings(meetings, DEMO)
     copied = meetings / MEETING.name
     assert (copied / "project.json").exists() and (copied / "audio").is_dir()
+    assert [p.name for p in tmp_path.iterdir()] == ["meetings"]
 
+    #====================================
     # 使用者刪掉示範會議之後，下次啟動不會再放回來
-    for f in sorted(copied.rglob("*"), reverse=True):
-        f.rmdir() if f.is_dir() else f.unlink()
-    copied.rmdir()
+    #====================================
+    shutil.rmtree(copied)
     app.seed_meetings(meetings, DEMO)
     assert list(meetings.iterdir()) == []
+
+
+def test_interrupted_first_start_is_redone(tmp_path, monkeypatch):
+    meetings = tmp_path / "meetings"
+    real_copy = shutil.copytree
+
+    #====================================
+    # 第一次啟動：複製到一半出事
+    #====================================
+    def broken_copy(src, dst):
+        Path(dst).mkdir(parents=True)
+        (Path(dst) / "project.json").write_text("寫到一半", encoding="utf-8")
+        raise OSError("磁碟滿了")
+    monkeypatch.setattr(shutil, "copytree", broken_copy)
+    with pytest.raises(OSError):
+        app.seed_meetings(meetings, DEMO)
+    assert not meetings.exists()
+
+    #====================================
+    # 下次啟動：重新來過，示範會議是完整的，暫存資料夾也清掉了
+    #====================================
+    monkeypatch.setattr(shutil, "copytree", real_copy)
+    app.seed_meetings(meetings, DEMO)
+    assert (meetings / MEETING.name / "project.json").exists() and (meetings / MEETING.name / "source.m4a").exists()
+    assert [p.name for p in tmp_path.iterdir()] == ["meetings"]
+
+
+def test_importing_the_tool_does_not_create_the_meetings_folder(tmp_path):
+    #====================================
+    # 在全新的行程裡 import（跑測試、別的腳本引用時就是這樣），資料位置指到還不存在的地方
+    #====================================
+    code = ("import sys; from pathlib import Path; sys.path[:0] = [sys.argv[1], sys.argv[1] + '/pipeline']; "
+            "import recorder; recorder.MEETINGS = Path(sys.argv[2]) / 'meetings'; import app; print(recorder.MEETINGS.exists())")
+    r = subprocess.run([sys.executable, "-X", "utf8", "-c", code, str(ROOT), str(tmp_path)],
+                       capture_output=True, text=True, encoding="utf-8")
+
+    #====================================
+    # 真的啟動（python app.py）才會建資料夾、放示範會議
+    #====================================
+    assert r.returncode == 0, r.stderr[-500:]
+    assert r.stdout.strip() == "False"
 
 
 def test_demo_meeting_opens_in_the_tool(client, data_root):

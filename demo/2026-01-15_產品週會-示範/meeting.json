@@ -1,6 +1,7 @@
 {
  "title": "產品週會（示範）",
  "date": "2026-01-15",
+ "demo": true,
  "source": {
   "file": "source.m4a",
   "duration_sec": 81,

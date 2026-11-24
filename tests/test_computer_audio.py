@@ -45,8 +45,14 @@ def test_remote_voices_are_mixed_in(tmp_path):
 def test_computer_track_is_left_out_when_it_has_no_real_sound(tmp_path, computer_sec, why):
     d, meta = meeting(tmp_path, computer_sec)
 
+    #====================================
+    # 轉檔
+    #====================================
     out = run.prepare_audio(d, meta, False)
 
+    #====================================
+    # 記下「沒有採用」，轉出來的單聲道裡只有麥克風
+    #====================================
     ca = meta["recording"]["computer_audio"]
     assert ca["used"] is False and ca["by"] == "auto" and abs(ca["active_sec"] - computer_sec) <= 1, why
     mic, computer = tone_db(out, 440, 880)
@@ -92,10 +98,15 @@ def test_files_from_elsewhere_are_downmixed_as_before(tmp_path):
 
 
 def test_existing_audio_is_kept_unless_forced(tmp_path):
+    #====================================
+    # 第一次轉檔
+    #====================================
     d, meta = meeting(tmp_path, 5)
     out = run.prepare_audio(d, meta, False)
     before = out.stat().st_mtime_ns
 
-    # 重跑（例如上次 Gemini 失敗）不會重做這一步，上次記下的結果也還在
+    #====================================
+    # 重跑（例如上次 Gemini 失敗）：不會重做這一步，上次記下的結果也還在
+    #====================================
     assert run.prepare_audio(d, meta, False).stat().st_mtime_ns == before
     assert meta["recording"]["computer_audio"]["used"] is True
