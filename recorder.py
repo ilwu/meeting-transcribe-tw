@@ -370,6 +370,7 @@ def status():
     transcribing = {k: _transcribe_state(v) for k, v in _all_jobs().items()}
     return {"recording": rec, "finalizing": dict(_state["finalizing"]), "transcribing": transcribing,
             "unfinished": [d.parent.name for d in unfinished()], "pending": pending(transcribing),
+            "screen_pending": screen_pending(transcribing),
             "can_record": available()}
 
 
@@ -377,14 +378,44 @@ def status():
 MEDIA_EXT = {".mp4", ".m4a", ".mp3", ".wav", ".webm", ".mkv", ".mov", ".aac", ".flac", ".ogg", ".wma"}
 
 
+def _busy(transcribing):
+    """正在轉錄、排隊、錄音或合併的會議資料夾：這些先不列進「等著處理」的清單。"""
+    #====================================
+    # 轉錄中或排隊中
+    #====================================
+    busy = {k for k, v in transcribing.items() if v["state"] in ("進行中", "排隊中")}
+
+    #====================================
+    # 錄音中、合併中
+    #====================================
+    if _state["rec"]:
+        busy.add(_state["rec"]["dir"].name)
+    return busy | {k for k, v in _state["finalizing"].items() if not v.startswith(("完成", "失敗"))}
+
+
+VIDEO_EXT = {".mp4", ".mkv", ".mov", ".webm"}
+
+
+def screen_pending(transcribing):
+    """已經有逐字稿、之後才放進影片的會議（會議軟體的錄影通常晚一點才下載得到）：只差畫面還沒處理。
+    只看副檔名，不去問 ffprobe：錄音頁每秒都會來問一次。"""
+    if not MEETINGS.is_dir():
+        return []
+    busy, out = _busy(transcribing), []
+    for d in sorted(MEETINGS.iterdir()):
+        if not d.is_dir() or d.name in busy or not (d / "project.json").exists() or (d / "transcripts/screen_timeline.json").exists():
+            continue
+        # source.* 本身是影片的不算：那種的畫面在第一次轉錄時就處理了（或使用者指定不處理）
+        if any(f.is_file() and f.suffix.lower() in VIDEO_EXT and f.stem != "source" for f in d.iterdir()):
+            out.append(d.name)
+    return out
+
+
 def pending(transcribing):
     """有錄音或影片、但還沒有校對專案、也沒在轉錄或錄音中的會議資料夾（例如直接丟進 Teams 下載檔的）。"""
     if not MEETINGS.is_dir():
         return []
-    busy = {k for k, v in transcribing.items() if v["state"] in ("進行中", "排隊中")}
-    if _state["rec"]:
-        busy.add(_state["rec"]["dir"].name)
-    busy |= {k for k, v in _state["finalizing"].items() if not v.startswith(("完成", "失敗"))}
+    busy = _busy(transcribing)
     out = []
     for d in sorted(MEETINGS.iterdir()):
         if not d.is_dir() or d.name in busy or (d / "project.json").exists() or (d / "rec").exists():

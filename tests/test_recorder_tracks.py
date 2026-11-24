@@ -305,6 +305,7 @@ def test_folder_name_does_not_repeat_the_date(devices, data_root):
     #====================================
     st = recorder.start(f"{today}-週會")
     folder = data_root / "meetings" / st["recording"]["folder"]
+    time.sleep(1.0)                                      # 錄到一點聲音再停：馬上停的話電腦忙時一個檔都還沒寫出來，會變成「沒有錄到任何聲音」
     recorder.stop()
     assert wait_saved(folder).startswith("完成")
 

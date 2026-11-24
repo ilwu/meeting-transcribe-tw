@@ -71,6 +71,19 @@ def make_two_tracks(path, seconds, computer_sec):
     return path
 
 
+def make_video(path, seconds, audio=None, delay=0, skip=0):
+    """小小的測試影片（畫面是一片藍，沒有畫面切換）。audio 是拿來當聲音的檔：影片開始 delay 秒後聲音才出現，
+    聲音從它的第 skip 秒開始；audio=None 時整段是數位靜音。"""
+    video = ["-f", "lavfi", "-i", f"color=c=blue:s=160x120:r=2:d={seconds}"]
+    if audio is None:
+        sound = ["-f", "lavfi", "-i", f"anullsrc=r=16000:cl=mono:d={seconds}"]
+    else:
+        sound = ["-ss", str(skip), "-i", str(audio), "-af", f"adelay={int(delay * 1000)}:all=1,apad"]
+    subprocess.run(["ffmpeg", "-v", "error", "-y", *video, *sound, "-shortest", "-c:v", "libx264", "-preset", "ultrafast",
+                    "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "48k", str(path)], check=True)
+    return path
+
+
 def tone_db(path, *freqs, channel=0, seconds=None):
     """音檔某個聲道裡，各個頻率的成分有多強（dB）。振幅 0.2 的純音整段都在大約是 -14；完全沒有會在 -90 以下。
     給一個頻率回傳一個數字，給好幾個回傳清單（只解碼一次：這台電腦每開一次 ffmpeg 要零點幾秒）。

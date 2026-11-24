@@ -2,12 +2,14 @@
 """一個指令跑完：原檔 →（影片抽畫面詞彙表、PDF 抽詞彙表）→ 16k 音訊 →（切段）→ Gemini 逐字稿 + whisper 對照 → 校對專案。
 用法: python pipeline/run.py meetings/<日期>_<標題> [--no-whisper] [--no-screen] [--force] [--model gemini-3.6-flash]
       [--computer-audio on|off|auto]   錄音頁錄的檔：轉錄時用不用電腦播出的那一軌（預設 auto：有聲音才用）；改了要加 --force 重轉
+      [--screen-offset 秒數]           另外放進來的錄影（screen.*）比錄音晚幾秒開始（早開始用負數）；自動對齊不準時手動指定，只重做畫面
 
 每一步的產出已存在就跳過（--force 全部重跑），所以中斷後重跑會接著做。
 完成後用 python app.py 開校對工具。
 """
 import base64, json, os, re, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -103,7 +105,8 @@ MEDIA_EXT = {".mp4", ".m4a", ".mp3", ".wav", ".webm", ".mkv", ".mov", ".aac", ".
 
 def import_raw(mdir):
     """直接丟進資料夾的原始檔（例如 Teams 下載的 mp4 與 vtt）整理成標準結構：
-    媒體檔 → source.*、字幕 → transcripts/teams.vtt、沒有 meeting.json 就建立。已整理過的不會再動。"""
+    媒體檔 → source.*、已經有聲音來源時另外放進來的影片 → screen.*、字幕 → transcripts/teams.vtt、沒有 meeting.json 就建立。
+    已整理過的不會再動。"""
     #====================================
     # 媒體檔改名為 source.*
     #====================================
@@ -118,6 +121,11 @@ def import_raw(mdir):
         log(f"原檔 {original} → source{media[0].suffix.lower()}")
     else:
         original = None
+
+    #====================================
+    # 另外放進來的影片當成畫面來源
+    #====================================
+    screen = adopt_screen(mdir)
 
     #====================================
     # 字幕搬進 transcripts/
@@ -136,7 +144,7 @@ def import_raw(mdir):
     # 補建或更新 meeting.json
     #====================================
     meta_path = mdir / "meeting.json"
-    if meta_path.exists() and not original and not vtts:
+    if meta_path.exists() and not original and not vtts and not screen:
         return
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
     m = re.match(r"(\d{4}-\d{2}-\d{2})[-_ ]*(.*)", mdir.name)    # 資料夾名稱：日期_標題（分隔用 - 或 _ 都可以）
@@ -148,6 +156,8 @@ def import_raw(mdir):
     s.setdefault("duration_sec", round(ffprobe_duration(src)))
     if original:
         s["original_name"] = original
+    if screen:
+        meta["screen"] = {"file": screen[0], "original_name": screen[1]}
     for orig, name in vtts:
         meta.setdefault("transcripts", {})[name] = f"Teams 自動字幕（原檔名 {orig}）"
     meta.setdefault("participants", [])
@@ -156,33 +166,216 @@ def import_raw(mdir):
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
 
 
+VIDEO_EXT = {".mp4", ".mkv", ".mov", ".webm"}
+
+
+def adopt_screen(mdir):
+    """已經有聲音來源（例如錄音頁錄的 source.m4a）的資料夾裡，另外放進來的影片當成「畫面來源」：改名為 screen.*，
+    回傳 (新檔名, 原檔名)；沒有這種檔回傳 None。聲音仍然用 source.*：會議軟體的錄影曾經整段沒錄到聲音。"""
+    #====================================
+    # 已經有畫面來源、或聲音來源本身就是影片：不用找
+    #====================================
+    if any(mdir.glob("screen.*")) or has_video(source_file(mdir)):
+        return None
+
+    #====================================
+    # 剛好一個影片才認
+    #====================================
+    videos = [f for f in mdir.iterdir() if f.is_file() and f.suffix.lower() in VIDEO_EXT and f.stem != "source" and has_video(f)]
+    if len(videos) != 1:
+        if videos:
+            log("資料夾裡有多個影片檔，不知道哪一個是這場的畫面，先不處理：" + "、".join(f.name for f in videos))
+        return None
+
+    #====================================
+    # 改名
+    #====================================
+    original, name = videos[0].name, f"screen{videos[0].suffix.lower()}"
+    videos[0].rename(mdir / name)
+    log(f"畫面來源 {original} → {name}（聲音仍用 {source_file(mdir).name}）")
+    return name, original
+
+
+def screen_file(mdir):
+    return next(mdir.glob("screen.*"), None)
+
+
+ALIGN_RATE, ALIGN_HOP = 4000, 40     # 比對用的聲音：4 kHz、每 10 毫秒一格
+ALIGN_GUARD_SEC = 2                  # 最像的位置前後這麼多秒不算「別的位置」
+# 最像的位置要比別的位置高出這個倍數才算對上。實測三場真的錄影：對得上的 1.8 到 5.2 倍（最低的是錄影的聲音 45 秒後就斷掉），
+# 兩場不相干的會議、或錄影裡只有一聲響的都在 1.1 倍以下
+ALIGN_MIN_SCORE = 1.5
+
+
+def onset_envelope(path):
+    """聲音「變大聲的瞬間」隨時間的變化（每 10 毫秒一格）。只留變大聲的瞬間，兩邊音量、背景音不同也比得起來。"""
+    import numpy as np
+    #====================================
+    # 解成低取樣率的單聲道
+    #====================================
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vn", "-ac", "1", "-ar", str(ALIGN_RATE), "-f", "s16le", "-"],
+                         capture_output=True).stdout
+    x = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+
+    #====================================
+    # 每一格的音量，取它變大的部分
+    #====================================
+    n = len(x) // ALIGN_HOP
+    if n < 2:
+        return np.zeros(0, dtype=np.float32)
+    e = np.log1p(np.sqrt(np.mean(x[:n * ALIGN_HOP].reshape(n, ALIGN_HOP) ** 2, axis=1)))
+    return np.maximum(np.diff(e, prepend=e[:1]), 0)
+
+
+def align(audio_env, video_env):
+    """兩段聲音錯開幾秒時最像。回傳 (影片比錄音晚幾秒開始, 把握程度)；把握程度是最像的位置比其他位置高出幾倍。
+    不用「比平均高出幾個標準差」：錄影裡只有一聲響的時候，它和錄音裡每個聲音都對得上一點，那個數字照樣很高。"""
+    import numpy as np
+    if not len(audio_env) or not len(video_env) or not video_env.any() or not audio_env.any():
+        return 0.0, 0.0
+
+    #====================================
+    # 所有錯開量一次算完（用 FFT）
+    #====================================
+    n = 1 << int(np.ceil(np.log2(len(audio_env) + len(video_env))))
+    corr = np.fft.irfft(np.fft.rfft(audio_env, n) * np.conj(np.fft.rfft(video_env, n)), n)
+
+    #====================================
+    # 最像的那個錯開量
+    #====================================
+    k = int(np.argmax(corr))
+    lag = k if k < n // 2 else k - n                     # 後半段代表負的錯開量（影片比錄音早開始）
+
+    #====================================
+    # 和其他位置比：真的對上時只有一個位置特別像
+    #====================================
+    guard = int(ALIGN_GUARD_SEC * ALIGN_RATE / ALIGN_HOP)
+    rest = corr.copy()
+    rest[np.arange(k - guard, k + guard + 1) % n] = 0
+    return lag * ALIGN_HOP / ALIGN_RATE, float(corr[k] / max(rest.max(), 1e-12))
+
+
+def video_started(video, original_name):
+    """影片是什麼時候開始錄的（電腦的當地時間）；查不到回傳 None。只在聲音對不上時當備案，會差幾十秒。"""
+    #====================================
+    # Teams 下載的檔名裡有開錄的時間
+    #====================================
+    m = re.search(r"(\d{8})[_-](\d{6})", original_name or "")
+    if m:
+        try:
+            return datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+        except ValueError:
+            pass
+
+    #====================================
+    # 不然看檔案裡記的建立時間（世界標準時間；實測比檔名的時間晚 17 到 83 秒）
+    #====================================
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format_tags=creation_time", "-of", "csv=p=0", str(video)],
+                       capture_output=True, text=True, encoding="utf-8")
+    try:
+        return datetime.fromisoformat(r.stdout.strip().replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def screen_offset(mdir, meta, video):
+    """畫面來源（screen.*）比聲音來源晚幾秒開始（早開始是負的）。算過就沿用 meta["screen"] 裡記的。"""
+    sc = meta.setdefault("screen", {"file": video.name})
+    if "offset_sec" in sc:
+        return sc["offset_sec"]
+
+    #====================================
+    # 比對兩邊的聲音
+    #====================================
+    off, score = align(onset_envelope(source_file(mdir)), onset_envelope(video))
+    if score >= ALIGN_MIN_SCORE:
+        sc.update(offset_sec=round(off, 2), aligned_by="audio")
+        log(f"畫面對齊：{video.name} 比錄音{'晚' if off >= 0 else '早'} {abs(off):.1f} 秒開始（用聲音比對）")
+        return sc["offset_sec"]
+
+    #====================================
+    # 聲音對不上（例如錄影整段沒有聲音）：用兩邊記下的開始時間估
+    #====================================
+    started, guess = (meta.get("recording") or {}).get("started"), video_started(video, sc.get("original_name"))
+    limit = ffprobe_duration(source_file(mdir)) + ffprobe_duration(video)
+    off = (guess - datetime.fromisoformat(started)).total_seconds() if started and guess else None
+    if off is not None and abs(off) < limit:
+        sc.update(offset_sec=round(off), aligned_by="timestamps")
+        log(f"⚠ 畫面對齊：兩邊的聲音對不上，改用檔案記錄的時間估計（{video.name} 比錄音{'晚' if off >= 0 else '早'} {abs(off):.0f} 秒），"
+            "畫面的時間可能差幾十秒；要修正用 --screen-offset 秒數")
+    else:
+        sc.update(offset_sec=0, aligned_by="none")
+        log(f"⚠ 畫面對齊：兩邊的聲音對不上，也查不到 {video.name} 的開錄時間，先當成同時開始；要修正用 --screen-offset 秒數")
+    return sc["offset_sec"]
+
+
+def set_screen_offset(args, meta, mdir):
+    """命令列的 --screen-offset 秒數：手動指定畫面來源比錄音晚幾秒開始。有指定回傳 True（畫面要重做）。"""
+    if "--screen-offset" not in args:
+        return False
+
+    #====================================
+    # 檢查
+    #====================================
+    i = args.index("--screen-offset")
+    try:
+        value = float(args[i + 1])
+    except (IndexError, ValueError):
+        sys.exit("--screen-offset 後面要接秒數（影片比錄音晚開始是正的，早開始是負的）")
+    if not screen_file(mdir):
+        sys.exit("--screen-offset 只用在另外放進影片當畫面來源（screen.*）的會議")
+
+    #====================================
+    # 記下來
+    #====================================
+    meta.setdefault("screen", {"file": screen_file(mdir).name}).update(offset_sec=value, aligned_by="manual")
+    return True
+
+
 def has_video(path):
     out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v", "-show_entries", "stream=codec_name",
                           "-of", "csv=p=0", str(path)], capture_output=True, text=True).stdout.strip()
     return bool(out) and out not in ("mjpeg", "png")      # 音檔內嵌封面圖不算影片
 
 
-def screen_analysis(mdir, key, force, batch=60):
-    """影片來源：抽關鍵畫面（畫面切換點 + 每 2 分鐘一張），請 Gemini 同時產出
+def screen_analysis(mdir, meta, key, force, batch=60):
+    """有畫面的會議：抽關鍵畫面（畫面切換點 + 每 2 分鐘一張），請 Gemini 同時產出
     畫面詞彙表（transcripts/glossary_screen.txt）與畫面時間軸（transcripts/screen_timeline.json）。
+    畫面來自 screen.*（另外放進來的錄影，時間換算成錄音的時間）或 source.* 本身。
     實測（docs/design.md）：比整段影片直接送 Gemini 便宜 3.5 倍且更準。截圖留在 frames/，校對工具與筆記會用到。"""
     out, tl_out = mdir / "transcripts/glossary_screen.txt", mdir / "transcripts/screen_timeline.json"
-    src = source_file(mdir)
+    separate = screen_file(mdir)
+    src = separate or source_file(mdir)
     if (out.exists() and tl_out.exists() and not force) or not has_video(src):
         return
+    offset = screen_offset(mdir, meta, src) if separate else 0
     dur = ffprobe_duration(src)
     r = subprocess.run(["ffmpeg", "-hide_banner", "-skip_frame", "nokey", "-i", str(src), "-an",
                         "-vf", "scale=320:-1,select='gt(scene,0.06)',showinfo", "-fps_mode", "vfr", "-f", "null", "-"],
                        capture_output=True, text=True, encoding="utf-8", errors="replace")
     scenes = {round(float(t)) for t in re.findall(r"pts_time:([\d.]+)", r.stderr)}
-    times = sorted(scenes | set(range(0, int(dur), 120)))
+    # 截圖與時間軸一律用錄音的時間：{錄音的秒數: 影片的秒數}。每 2 分鐘一張照錄音的時間排（影片早開始時，錄音一開頭就有一張），
+    # 畫面切換點從影片的時間換算過來；落在錄音或影片範圍外的用不到
+    end = ffprobe_duration(source_file(mdir)) if separate else dur
+    wanted = {a: a - offset for a in range(0, int(end), 120)} | {round(t + offset): t for t in scenes}
+    shots = {a: t for a, t in wanted.items() if 0 <= a <= end and 0 <= t < dur}
+    times = sorted(shots)
     fdir = mdir / "frames"; fdir.mkdir(exist_ok=True)
+    if separate:                                         # 對齊的結果可能變了，同名的舊截圖不能沿用
+        for f in fdir.glob("t*.jpg"):
+            f.unlink()
+    if separate and not times:
+        # 留下空的結果：不然錄音頁會一直把這場列成「畫面還沒處理」
+        log(f"⚠ {src.name} 和錄音的時間沒有重疊（對齊的結果是差 {offset:+.0f} 秒），沒有畫面可用；對齊錯了的話用 --screen-offset 秒數 修正")
+        out.write_text("", encoding="utf-8")
+        tl_out.write_text("[]", encoding="utf-8")
+        return
     log(f"畫面詞彙表：抽 {len(times)} 張關鍵畫面（畫面切換 {len(scenes)} 次）")
     frames = []
     for t in times:
         f = fdir / f"t{t:05d}.jpg"
         if not f.exists():
-            subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", str(min(t + 1, dur - 1)), "-i", str(src),
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", str(min(shots[t] + 1, dur - 1)), "-i", str(src),
                             "-frames:v", "1", "-vf", "scale=1280:-1", "-q:v", "4", str(f)], check=True)
         frames.append(f)
     gl_lines, timeline = [], []
@@ -194,8 +387,8 @@ def screen_analysis(mdir, key, force, batch=60):
         res = gemini_text(parts + [{"text": SCREEN_PROMPT}], key, as_json=True) or {}
         gl_lines += [str(x).strip() for x in res.get("glossary", []) if str(x).strip()]
         timeline += [x for x in res.get("timeline", []) if isinstance(x, dict) and "t" in x]
-    if gl_lines:
-        out.write_text("\n".join(dict.fromkeys(gl_lines)) + "\n", encoding="utf-8")
+    if gl_lines or timeline:                             # 畫面上沒有可用的詞也留下（空的）檔：不然每次重跑都會再分析一次畫面
+        out.write_text("".join(x + "\n" for x in dict.fromkeys(gl_lines)), encoding="utf-8")
         log(f"畫面詞彙表完成：{len(gl_lines)} 行 → transcripts/glossary_screen.txt")
     if timeline:
         names = {t: f.name for t, f in zip(times, frames)}
@@ -562,9 +755,10 @@ def main():
     meta_path = mdir / "meeting.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
     set_computer_choice(args, meta, force)
+    redo_screen = set_screen_offset(args, meta, mdir)
     (mdir / "transcripts").mkdir(exist_ok=True)
     if "--no-screen" not in args:
-        screen_analysis(mdir, key, force)
+        screen_analysis(mdir, meta, key, force or redo_screen)
     materials_glossary(mdir, key, force)
     gl = glossary(mdir)
 

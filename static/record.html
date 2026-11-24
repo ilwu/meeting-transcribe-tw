@@ -55,7 +55,7 @@
 
   <section id="pendingCard" class="card p-5">
     <div class="section-title">還沒轉逐字稿的會議</div>
-    <div class="muted mt-1">把錄音或 Teams 下載的影片（可連同 .vtt 字幕、簡報 PDF）放進 meetings/日期_標題/ 資料夾，就會出現在這裡。</div>
+    <div class="muted mt-1">把錄音或 Teams 下載的影片（可連同 .vtt 字幕、簡報 PDF）放進 meetings/日期_標題/ 資料夾，就會出現在這裡。這裡錄過的會議，之後把會議軟體的錄影放進同一個資料夾，可以補上畫面（聲音仍用這裡錄的）。</div>
     <ul id="pending" class="mt-2 space-y-2"><li class="muted">（無）</li></ul>
   </section>
 </main>
@@ -139,8 +139,11 @@ function renderInner(st){
   const open = new Set([...document.querySelectorAll('#items details[open]')].map(x => x.dataset.k));   // 重畫後保留展開狀態
   $('#items').innerHTML = items.join('') || '<li class="muted">（無）</li>';
   document.querySelectorAll('#items details').forEach(x => { if (open.has(x.dataset.k)) x.open = true; });
-  $('#pending').innerHTML = (st.pending || []).map(k =>
-    `<li class="flex items-center gap-3"><b class="flex-1">${esc(k)}</b><button data-tr="${esc(k)}" class="btn btn-xs">開始轉逐字稿</button></li>`).join('') || '<li class="muted">（無）</li>';
+  // 兩種等著處理的會議用同一個按鈕（同一支 run.py，做過的步驟會跳過）：還沒轉逐字稿的，以及逐字稿轉完才放進影片、只差畫面的
+  const waiting = [...(st.pending || []).map(k => [k, '', '開始轉逐字稿']),
+                   ...(st.screen_pending || []).map(k => [k, '放進了影片，畫面還沒處理', '處理畫面'])];
+  $('#pending').innerHTML = waiting.map(([k, note, action]) =>
+    `<li class="flex items-center gap-3"><b class="flex-1">${esc(k)}${note ? `<span class="muted font-normal">　${note}</span>` : ''}</b><button data-tr="${esc(k)}" class="btn btn-xs">${action}</button></li>`).join('') || '<li class="muted">（無）</li>';
 }
 async function poll(){
   try { render(await api('/api/rec/status')); } catch (e) {}

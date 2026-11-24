@@ -199,10 +199,15 @@ async function loadProject(n){
     + '。常見原因是開錄的人把麥克風靜音，或電腦切換了音訊裝置。' : '';
   $('#warn').classList.toggle('hidden', !silent.length);
   const ca = m.computer_audio;                       // 錄音頁錄的會議：電腦播出的那一軌有沒有聲音、有沒有用在逐字稿
-  $('#pcNote').textContent = !ca?.active_sec ? '' : ca.used
+  const notes = [];
+  if (ca?.active_sec) notes.push(ca.used
     ? `電腦播出的聲音（線上會議的對方）有 ${fmt(ca.active_sec)}，已和麥克風混在一起轉錄。`
-    : `電腦播出的聲音有 ${fmt(ca.active_sec)}，沒有用在逐字稿（${ca.by === 'manual' ? '手動指定' : '太短'}）。`;
-  $('#pcNote').classList.toggle('hidden', !ca?.active_sec);
+    : `電腦播出的聲音有 ${fmt(ca.active_sec)}，沒有用在逐字稿（${ca.by === 'manual' ? '手動指定' : '太短'}）。`);
+  // 畫面來自另外放進來的錄影：聲音對不上時只能用檔案的時間估，縮圖出現的位置會有誤差
+  if (m.screen_aligned_by === 'timestamps') notes.push('畫面的時間是用檔案記錄的時間估的，縮圖可能差幾十秒。');
+  if (m.screen_aligned_by === 'none') notes.push('畫面和錄音對不上時間，縮圖的位置可能不準。');
+  $('#pcNote').textContent = notes.join(' ');
+  $('#pcNote').classList.toggle('hidden', !notes.length);
   focusId = null; renderNav(); renderSpeakers(); renderList(); updateStat(); scroller.scrollTop = 0;
   if (curTab === 'notes') openNotes();
 }

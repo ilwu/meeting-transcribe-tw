@@ -176,6 +176,7 @@ def projects_overview():
                                 [[meta["silent_tail_from_sec"], meta.get("source", {}).get("duration_sec")]]
                                 if meta.get("silent_tail_from_sec") else []),
                             "computer_audio": (meta.get("recording") or {}).get("computer_audio"),
+                            "screen_aligned_by": (meta.get("screen") or {}).get("aligned_by"),
                             "done": sum(1 for s in p["segments"] if s["status"] != "pending"),
                             "total": len(p["segments"])})
             _overview_cache[d] = cached
@@ -312,8 +313,9 @@ def rec_stop():
 
 @app.post("/api/rec/transcribe/<folder>")
 def rec_transcribe(folder):
-    """對還沒轉逐字稿的會議資料夾執行 run.py（原始檔由 run.py 自動整理）。"""
-    if folder not in recorder.pending(recorder.status()["transcribing"]):
+    """對還沒轉逐字稿、或後來才放進影片的會議資料夾執行 run.py（原始檔由 run.py 自動整理，已經做過的步驟會跳過）。"""
+    st = recorder.status()
+    if folder not in st["pending"] + st["screen_pending"]:
         abort(404)
     recorder.transcribe(recorder.MEETINGS / folder)
     return jsonify(recorder.status())
